@@ -1,0 +1,7 @@
+[submodule "cuda_codes/NVIDIA_CUDA-11.0_Samples"]
+	url  = https://gitee.com/masa-laboratory/NVIDIA_CUDA-11.0_Samples
+	path = cuda_codes/NVIDIA_CUDA-11.0_Samples
+
+[submodule "cuda_codes/vectorSparse"]
+	url  = https://gitee.com/masa-laboratory/vector-sparse-gpgpusim
+	path = cuda_codes/vectorSparse
