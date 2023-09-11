@@ -69,7 +69,8 @@
         "variant": "cpp",
         "bit": "cpp",
         "*.def": "cpp",
-        "*.ipp": "cpp"
+        "*.ipp": "cpp",
+        "*.tup": "cpp"
     },
     "editor.tokenColorCustomizations": {
         "textMateRules": [
@@ -96,4 +97,7 @@
             },
         ]
     },
+    "editor.suggest.snippetsPreventQuickSuggestions": false,
+    "aiXcoder.showTrayIcon": true,
+    "C_Cpp.default.compilerPath": "",
 }
