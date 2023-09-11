@@ -126,7 +126,8 @@ void shader_core_ctx::create_front_pipeline() {
                      m_config->m_specialized_unit[j].name));
     m_config->m_specialized_unit[j].OC_EX_SPEC_ID = m_pipeline_reg.size() - 1;
   }
-
+  //在subcore模式下，每个warp调度器在寄存器集合中有一个具体的寄存器可供使用，这个寄
+  //存器由调度器的m_id索引。
   if (m_config->sub_core_model) {
     // in subcore model, each scheduler should has its own issue register, so
     // num scheduler = reg width
@@ -185,7 +186,12 @@ void shader_core_ctx::create_front_pipeline() {
                               IN_L1I_MISS_QUEUE);
 }
 
+/*
+Shader Core内创建warp调度器。单个Sahder Core内的warp调度器的个数由gpgpu_num_sched_per_core配置参
+数决定，Volta架构每核心有4个warp调度器。
+*/
 void shader_core_ctx::create_schedulers() {
+  //创建一个记分牌。一个Shader Core有一个记分牌。
   m_scoreboard = new Scoreboard(m_sid, m_config->max_warps_per_shader, m_gpu);
 
   // scedulers
@@ -193,6 +199,13 @@ void shader_core_ctx::create_schedulers() {
   std::string sched_config = m_config->gpgpu_scheduler_string;
   const concrete_scheduler scheduler =
       sched_config.find("lrr") != std::string::npos
+          //CONCRETE_SCHEDULER_LRR 是模拟器中的一个调度器（scheduler）选项之一。LRR 表示 “Least 
+          //Recently Reused”，意为"最近最少使用"。该调度器算法基于最近最少使用原则，用于管理模拟器
+          //中的请求调度。在模拟器中，存在多个请求，如指令和数据访问请求，它们需要按照一定的顺序进行
+          //处理和执行。CONCRETE_SCHEDULER_LRR 算法根据请求最近的使用情况来确定下一个要处理的请求，
+          //优先选择最近最少使用的请求。通过使用最近最少使用算法，CONCRETE_SCHEDULER_LRR 调度器可
+          //以更好地利用缓存和内存的访问模式，以提高整体性能。通过保留最近最少使用的请求，可以减少在
+          //请求处理过程中的缓存冲突和竞争，从而降低延迟并提高效率。
           ? CONCRETE_SCHEDULER_LRR
           : sched_config.find("two_level_active") != std::string::npos
                 ? CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE
@@ -208,8 +221,11 @@ void shader_core_ctx::create_schedulers() {
                                   : NUM_CONCRETE_SCHEDULERS;
   assert(scheduler != NUM_CONCRETE_SCHEDULERS);
 
+  //单个Sahder Core内的warp调度器的个数由gpgpu_num_sched_per_core配置参数决定，Volta架构每核心有
+  //4个warp调度器。
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++) {
     switch (scheduler) {
+      //创建调度器，Volta架构中调度器的类型为CONCRETE_SCHEDULER_LRR，最近最少使用。
       case CONCRETE_SCHEDULER_LRR:
         schedulers.push_back(new lrr_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
@@ -263,11 +279,30 @@ void shader_core_ctx::create_schedulers() {
     };
   }
 
+  //这里m_warp是划分到当前SM的所有warp集合，其定义为：
+  //    std::vector<shd_warp_t *> *m_warp;
+  //m_warp[i]是划分到当前SM的第i个warp，这段代码其实是将m_warp中的所有warp均分给每个调度器，这
+  //样每个调度器就可以对划分给自己的warp进行调度了。在Volta架构上，每核心有4个warp调度器，划分的
+  //策略是，warp 0->调度器0，warp 1->调度器1，warp 2->调度器2，warp 3->调度器3，warp 4->调度
+  //器0，以此类推。在每个调度器内部有一个专门存储各自所划分到的warp的列表，即m_supervised_warps，
+  //每个调度器在下面这段代码里将划分为自己的warp加入到自己的m_supervised_warps中。该列表定义为：
+  //    std::vector<shd_warp_t *> m_supervised_warps;
+  //m_supervisored_twarps列表是此调度程序应该在其间进行仲裁的所有warps。这在存在多个warp调度器
+  //的系统中非常有用。在单个调度器系统中，这只是分配给该核心的所有warp（单个调度器不需要划分）。
   for (unsigned i = 0; i < m_warp.size(); i++) {
     // distribute i's evenly though schedulers;
-    schedulers[i % m_config->gpgpu_num_sched_per_core]->add_supervised_warp_id(
-        i);
+    //m_supervisored_twarps列表是此调度程序应该在其间进行仲裁的所有warps。这在存在多个warp调度
+    //器的系统中非常有用。在单个调度器系统中，这只是分配给该核心的所有warp。
+    schedulers[i % m_config->gpgpu_num_sched_per_core]->add_supervised_warp_id(i);
   }
+  
+  //done_adding_supervised_warps()函数的定义为：
+  //    virtual void done_adding_supervised_warps() {
+  //      m_last_supervised_issued = m_supervised_warps.end();
+  //    }
+  //这里其实就是对每个调度器的m_last_supervised_issued进行初始化，m_last_supervised_issued是
+  //指代上一次调度的warp，在这里初始化为m_supervised_warps.end()，即m_supervised_warps的最后
+  //一个m_supervised_warps中的warp。
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
     schedulers[i]->done_adding_supervised_warps();
   }
@@ -339,9 +374,25 @@ void shader_core_ctx::create_exec_pipeline() {
     m_operand_collector.add_cu_set(
         INT_CUS, m_config->gpgpu_operand_collector_num_units_int,
         m_config->gpgpu_operand_collector_num_out_ports_int);
-
+    //gpgpu_operand_collector_num_in_ports_sp是SP单元接入操作数收集器的输入端口数量。在前面
+    //的warp调度器代码里单个Sahder Core内的warp调度器的个数由gpgpu_num_sched_per_core配置参
+    //数决定，Volta架构每核心有4个warp调度器。每个调度器的创建代码：
+    //     schedulers.push_back(new lrr_scheduler(
+    //             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
+    //             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
+    //             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
+    //             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
+    //             &m_pipeline_reg[ID_OC_MEM], i));
+    //在发射过程中，warp调度器将可发射的指令按照其指令类型分发给不同的单元，这些单元包括SP/DP/
+    //SFU/INT/TENSOR_CORE/MEM，在发射过程完成后，需要针对指令通过操作数收集器将指令所需的操作
+    //数全部收集齐。对于一个SM，对应于一个操作数收集器，调度器的发射过程将指令放入：
+    //    m_pipeline_reg[ID_OC_SP]、m_pipeline_reg[ID_OC_DP]、m_pipeline_reg[ID_OC_SFU]、
+    //    m_pipeline_reg[ID_OC_INT]、m_pipeline_reg[ID_OC_TENSOR_CORE]、
+    //    m_pipeline_reg[ID_OC_MEM]
+    //等寄存器集合中，用以操作数收集器来收集操作数。
     for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_sp;
          i++) {
+      //m_pipeline_reg的定义：std::vector<register_set> m_pipeline_reg;
       in_ports.push_back(&m_pipeline_reg[ID_OC_SP]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_SP]);
       cu_sets.push_back((unsigned)SP_CUS);
@@ -349,7 +400,7 @@ void shader_core_ctx::create_exec_pipeline() {
       m_operand_collector.add_port(in_ports, out_ports, cu_sets);
       in_ports.clear(), out_ports.clear(), cu_sets.clear();
     }
-
+    //gpgpu_operand_collector_num_in_ports_dp是DP单元接入操作数收集器的输入端口数量。
     for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_dp;
          i++) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_DP]);
@@ -359,7 +410,7 @@ void shader_core_ctx::create_exec_pipeline() {
       m_operand_collector.add_port(in_ports, out_ports, cu_sets);
       in_ports.clear(), out_ports.clear(), cu_sets.clear();
     }
-
+    //gpgpu_operand_collector_num_in_ports_sfu是SFU单元接入操作数收集器的输入端口数量。
     for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_sfu;
          i++) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_SFU]);
@@ -369,7 +420,7 @@ void shader_core_ctx::create_exec_pipeline() {
       m_operand_collector.add_port(in_ports, out_ports, cu_sets);
       in_ports.clear(), out_ports.clear(), cu_sets.clear();
     }
-
+    //gpgpu_operand_collector_num_in_ports_tensor_core是TC单元接入操作数收集器的输入端口数量。
     for (unsigned i = 0;
          i < m_config->gpgpu_operand_collector_num_in_ports_tensor_core; i++) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_TENSOR_CORE]);
@@ -379,7 +430,7 @@ void shader_core_ctx::create_exec_pipeline() {
       m_operand_collector.add_port(in_ports, out_ports, cu_sets);
       in_ports.clear(), out_ports.clear(), cu_sets.clear();
     }
-
+    //gpgpu_operand_collector_num_in_ports_mem是MEM单元接入操作数收集器的输入端口数量。
     for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_mem;
          i++) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_MEM]);
@@ -389,7 +440,7 @@ void shader_core_ctx::create_exec_pipeline() {
       m_operand_collector.add_port(in_ports, out_ports, cu_sets);
       in_ports.clear(), out_ports.clear(), cu_sets.clear();
     }
-
+    //gpgpu_operand_collector_num_in_ports_int是INT单元接入操作数收集器的输入端口数量。
     for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_int;
          i++) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_INT]);
@@ -401,6 +452,7 @@ void shader_core_ctx::create_exec_pipeline() {
     }
   }
 
+  //执行操作数收集器的初始化。
   m_operand_collector.init(m_config->gpgpu_num_reg_banks, this);
 
   m_num_function_units =
@@ -882,10 +934,15 @@ const warp_inst_t *exec_shader_core_ctx::get_next_inst(unsigned warp_id,
   return m_gpu->gpgpu_ctx->ptx_fetch_inst(pc);
 }
 
+/*
+获取warp_id对应的SIMT堆栈顶部的PC值和RPC值。
+*/
 void exec_shader_core_ctx::get_pdom_stack_top_info(unsigned warp_id,
                                                    const warp_inst_t *pI,
                                                    unsigned *pc,
                                                    unsigned *rpc) {
+  //SIMT堆栈是一个warp有一个。m_simt_stack是每个warp有一个。
+  //SIMT堆栈的get_pdom_stack_top_info()函数的功能是获取SIMT堆栈顶部的PC值和RPC值。
   m_simt_stack[warp_id]->get_pdom_stack_top_info(pc, rpc);
 }
 
@@ -942,6 +999,10 @@ void shader_core_ctx::decode() {
         }
       }
     }
+    //这里需要说明下m_inst_fetch_buffer与m_ibuffer的区别：m_inst_fetch_buffer变量在获取（指令缓存
+    //访问）和解码阶段之间充当流水线寄存器；而每个shd_warp_t都有一组m_ibuffer的I-Buffer条目(ibuffer
+    //entry)，持有可配置的指令数量（一个周期内允许获取的最大指令）。解码完毕后将m_inst_fetch_buffer
+    //设置为False，以便于下一拍继续fetch操作。
     m_inst_fetch_buffer.m_valid = false;
   }
 }
@@ -955,14 +1016,35 @@ SIMT Core的取指令时钟周期。fetch()函数生成指令内存请求，并�
     ** 否则，即如果缓存中没有就绪指令：
       *** 遍历所有硬件warp（2048/32）。如果warp正在运行，没有等待instruction cache missing，并且
           其指令缓冲区为空：则生成内存获取请求。
-      *** 检查是否可以在指令缓存中直接获取：
-        **** 如果是，则将指令放入m_inst_fetch_buffer。
-        **** 否则，硬件warp被设置为指令缓存丢失状态。
   * 运行m_L1I->cycle()函数。
+
+这里需要说明下m_inst_fetch_buffer与m_ibuffer的区别：m_inst_fetch_buffer变量在获取（指令缓存访问）
+和解码阶段之间充当流水线寄存器；而每个shd_warp_t都有一组m_ibuffer的I-Buffer条目(ibuffer_entry)，持
+有可配置的指令数量（一个周期内允许获取的最大指令）。首先如果m_inst_fetch_buffer为空，则要判断L1指令缓
+存是否有就绪的指令，就绪指令存在的话要从L1指令缓存中获取指令；而如果L1指令缓存中没有指令，这时候要判断
+一下是否因为warp运行完毕导致L1指令缓存中没有指令了，如果是warp正在运行，且没有等待挂起的L1缓存未命中的
+挂起状态，且warp的指令缓冲区为空，这时候就说明要取下一条PC值的指令。
 */
 void shader_core_ctx::fetch() {
   //m_inst_fetch_buffer的定义为：
   //    ifetch_buffer_t m_inst_fetch_buffer;
+  //ifetch_buffer_t的定义为：
+  //    struct ifetch_buffer_t {
+  //       ifetch_buffer_t() { m_valid = false; }
+  //       ifetch_buffer_t(address_type pc, unsigned nbytes, unsigned warp_id) {
+  //         m_valid = true;
+  //         m_pc = pc;
+  //         m_nbytes = nbytes;
+  //         m_warp_id = warp_id;
+  //       }
+  //       bool m_valid;
+  //       //获取的指令的PC值。
+  //       address_type m_pc;
+  //       unsigned m_nbytes;
+  //       unsigned m_warp_id;
+  //     };
+  //这里可以看出指令获取缓冲区（ifetch_Buffer_t）仅仅能够容得下单条指令。
+
   //指令获取缓冲区。指令获取缓冲区（ifetch_Buffer_t）对指令缓存（I-cache）和SIMT Core之间的接口进行
   //建模。它有一个成员m_valid，用于指示缓冲区是否有有效的指令。它还将指令的warp id记录在m_warp_id中。
   //因此，当m_valid为0，即指示缓冲区暂时没有有效的指令，可以预取新的指令。注意预取新的指令时，要对新的
@@ -970,11 +1052,14 @@ void shader_core_ctx::fetch() {
   if (!m_inst_fetch_buffer.m_valid) {
     //m_L1I是指令缓存（I-cache），在手册中<<三、SIMT Cores>>部分有I-cache的详细图。如果存在就绪访问，
     //则m_L1I->access_ready()返回true。这里就绪的内存访问代表的是，I-cache含有新的可以就绪的指令。
+    //m_current_response是就绪内存访问的列表，m_L1I->access_ready()返回的是m_current_response中是
+    //否有就绪的内存访问。m_current_response仅存储了就绪内存访问的地址。
     if (m_L1I->access_ready()) {
       //获取I-cache的下次内存访问，返回下一个就绪访问，即返回下一个就绪的指令。
       mem_fetch *mf = m_L1I->next_access();
-      //如果前面 mem_fetch *mf 已经获取了就绪的指令，则证明 mf 所在的warp现在不处于instruction miss
-      //的状态，设置该状态为false。
+      //如果前面 mem_fetch *mf 已经获取了就绪的指令，则证明 mf 所在的warp现在不处于挂起的指令缓冲未命
+      //中的状态，设置该状态为false。mf->get_wid()返回的是当前已就绪的指令所在的warp的ID，那么证明当
+      //前mf->get_wid()指示的warp已经能获取有效指令而不处于挂起的指令缓冲未命中的状态。
       m_warp[mf->get_wid()]->clear_imiss_pending();
       //创建对新指令预取这一行为的对象，传入参数为：
       //    address_type pc：m_warp[mf->get_wid()]->get_pc()
@@ -996,9 +1081,9 @@ void shader_core_ctx::fetch() {
       // find an active warp with space in instruction buffer that is not
       // already waiting on a cache miss and get next 1-2 instructions from
       // i-cache...
-      //在指令缓冲区中找到一个指示有指令获取缓冲空间（上面的m_inst_fetch_buffer）的活跃warp，该
-      //空间尚未由于缓存未命中而等待，并从I-cache中获取下一个1-2条指令。查找下一个warp时，采取轮
-      //询机制：
+      //这里m_L1I->access_ready()不成立，即指令缓存中没有就绪的指令。在指令缓冲区中找到一个指示
+      //有指令获取缓冲空间（上面的m_inst_fetch_buffer）的活跃warp，该空间尚未由于缓存未命中而等
+      //待，并从I-cache中获取下一个1-2条指令。查找下一个warp时，采取轮询机制：
       //    (m_last_warp_fetched + 1 + i) % m_config->max_warps_per_shader;
       for (unsigned i = 0; i < m_config->max_warps_per_shader; i++) {
         //轮询机制获取下一个活跃warp。
@@ -1011,6 +1096,22 @@ void shader_core_ctx::fetch() {
         //    m_warp[warp_id]->hardware_done()检查这个warp是否已经完成执行并且可以回收；
         //    m_scoreboard->pendingWrites(warp_id)返回记分牌的reg_table中是否有挂起的写入；
         //    m_warp[warp_id]->done_exit()返回线程退出的标识。
+        //m_scoreboard->pendingWrites(warp_id)返回记分牌的reg_table中是否有隶属于当前warpid
+        //的挂起的写入。warp id指向的reg_table为空的话，代表没有挂起的写入，返回false。[挂起的
+        //写入]是指wid是否有已发射但尚未完成的指令，将目标寄存器保留在记分牌，这时候该warp尚未完
+        //成执行并不能回收。
+        //shd_warp_t::hardware_done()中：
+        //    functional_done()返回warp已经执行完毕的标志，已经完成的线程数量=warp的大小时，就
+        //    代表该warp已经完成。stores_done()返回所有store访存请求是否已经全部执行完，已发送
+        //    但尚未确认的写存储请求（已发出写请求但未收到写确认信号时）数m_stores_outstanding
+        //    =0时，代表所有store访存请求已经全部执行完，这里m_stores_outstanding在发出一个写
+        //    请求时+=1，在收到一个写确认时-=1。m_inst_fetch_buffer中含有效指令时且将该指令解
+        //    码过程中填充进warp的m_ibuffer时，增加在流水线中的指令数m_inst_in_pipeline（注意
+        //    这里在decode()函数中会向warp的m_ibuffer填充进2条指令）；在指令完成写回操作时减少
+        //    在流水线中的指令数m_inst_in_pipeline。inst_in_pipeline()返回流水线中的指令数量
+        //    m_inst_in_pipeline。
+        //    这里一个warp完成的标志由三个条件组成，分别是：1、warp已经执行完毕；2、所有store访
+        //    存请求已经全部执行完；3、流水线中的指令数量为0。
         if (m_warp[warp_id]->hardware_done() &&
             !m_scoreboard->pendingWrites(warp_id) &&
             !m_warp[warp_id]->done_exit()) 
@@ -1029,7 +1130,8 @@ void shader_core_ctx::fetch() {
               //返回线程所在的CTA的ID。
               unsigned cta_id = m_warp[warp_id]->get_cta_id();
               if (m_thread[tid] == NULL) {
-                //如果该线程信息为空，则注册该线程退出。
+                //如果该线程信息为空，则注册该线程退出。register_cta_thread_exit功能是注册cta_id
+                //所标识的CTA中的单个线程退出。
                 register_cta_thread_exit(cta_id, m_warp[warp_id]->get_kernel_info());
               } else {
                 register_cta_thread_exit(cta_id, &(m_thread[tid]->get_kernel()));
@@ -1054,12 +1156,23 @@ void shader_core_ctx::fetch() {
         //此代码从I-Cache获取指令或生成内存访问。functional_done()返回warp是否已经执行完毕，已
         //经完成的线程数量=warp的大小时，就代表该warp已经完成。imiss_pending()返回warp是否因指
         //令缓冲未命中而挂起的状态标识。ibuffer_empty()返回I-Bufer是否为空。
+        //这里是在前面的m_L1I->access_ready()不成立，即指令缓存中没有就绪的指令；且当前warp尚未
+        //执行完毕；且该warp尚未处于指令缓冲未命中挂起的状态；且该warp的m_ibuffer为空，没有可以
+        //后续执行的指令，则需要生成隶属于该warp的下一条指令预取。
+
+        //这里说明下m_inst_fetch_buffer与m_ibuffer的区别：m_inst_fetch_buffer变量在获取（指令
+        //缓存访问）和解码阶段之间充当流水线寄存器；而每个shd_warp_t都有一组m_ibuffer的I-Buffer
+        //条目(ibuffer_entry)，持有可配置的指令数量（一个周期内允许获取的最大指令）。首先，如果
+        //m_inst_fetch_buffer为空，则要判断L1指令缓存是否有就绪的指令，就绪指令存在的话要从L1指
+        //令缓存中获取指令；而如果L1指令缓存中没有指令，这时候要判断一下是否因为warp运行完毕导致
+        //L1指令缓存中没有指令了，如果是warp正在运行，且没有等待挂起的L1缓存未命中的挂起状态，且
+        //warp的指令缓冲区为空，这时候就说明要取下一条PC值的指令。
         if (!m_warp[warp_id]->functional_done() &&
             !m_warp[warp_id]->imiss_pending() &&
             m_warp[warp_id]->ibuffer_empty()) 
         {
           address_type pc;
-          //获取当前warp正在执行指令的PC值。
+          //返回warp内下一个要执行的指令的PC值。
           pc = m_warp[warp_id]->get_pc();
           //上一步获取的PC值，是从0开始编号的，需要加上指令在内存中存储的首地址0xF0000000才能到
           //I-Cache中取指令，因为I-Cache的起始地址就是0xF0000000。
@@ -1103,6 +1216,10 @@ void shader_core_ctx::fetch() {
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
+            //将pc值对应的指令放入m_inst_fetch_buffer。这里要再次说明下m_inst_fetch_buffer与
+            //m_ibuffer的区别：m_inst_fetch_buffer变量在获取（指令缓存访问）和解码阶段之间充当
+            //流水线寄存器；而每个shd_warp_t都有一组m_ibuffer的I-Buffer条目(ibuffer_entry)，
+            //持有可配置的指令数量（一个周期内允许获取的最大指令）。
             m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
             delete mf;
@@ -1131,24 +1248,49 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   }
 }
 
+/*
+发射warp。例如：
+    m_shader->issue_warp(*m_mem_out, pI, active_mask, warp_id, m_id);
+*/
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
                                  unsigned warp_id, unsigned sch_id) {
+  //在pipe_reg_set流水线寄存器中寻找sch_id对应的空闲的寄存器。在subcore模式下，每
+  //个warp调度器在寄存器集合中有一个具体的寄存器可供使用，这个寄存器由调度器的m_id
+  //索引。
   warp_inst_t **pipe_reg =
       pipe_reg_set.get_free(m_config->sub_core_model, sch_id);
   assert(pipe_reg);
-
+  //由于已经决定发射指令，因此将I-Bufer中的next_inst所在的槽清除置无效。
   m_warp[warp_id]->ibuffer_free();
   assert(next_inst->valid());
   **pipe_reg = *next_inst;  // static instruction information
+  //(*pipe_reg)->issue()的定义如下：
+  //    void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
+  //                            unsigned long long cycle, int dynamic_warp_id,
+  //                            int sch_id) {
+  //      m_warp_active_mask = mask;
+  //      m_warp_issued_mask = mask;
+  //      m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
+  //      m_warp_id = warp_id;
+  //      m_dynamic_warp_id = dynamic_warp_id;
+  //      issue_cycle = cycle;
+  //      cycles = initiation_interval;
+  //      m_cache_hit = false;
+  //      m_empty = false;
+  //      m_scheduler_id = sch_id;
+  //    }
+  //设置指令动态发射过程中的一些信息。
   (*pipe_reg)->issue(active_mask, warp_id,
                      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
                      m_warp[warp_id]->get_dynamic_warp_id(),
                      sch_id);  // dynamic instruction information
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
+  //由于已经确定了指令next_inst的执行顺序没有问题，因此可以对该条指令进行功能模拟。
   func_exec_inst(**pipe_reg);
 
+  //如果发射的指令的OP操作码是屏障指令，则保存当前warp处于屏障指令状态。
   if (next_inst->op == BARRIER_OP) {
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
@@ -1158,9 +1300,11 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_warp[warp_id]->set_membar();
   }
 
+  //更新SIMT堆栈。
   updateSIMTStack(warp_id, *pipe_reg);
-
+  //设置计分板，发射指令时，将其目标寄存器保留在相应硬件warp的记分牌中。
   m_scoreboard->reserveRegisters(*pipe_reg);
+  //设置下一条指令的PC值。
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
 
@@ -1324,8 +1468,15 @@ void shader_core_ctx::issue() {
   // Ensure fair round robin issu between schedulers
   unsigned j;
   //对Shader Core里的可配置数量的调度器单元进行迭代，其中每一个单元都执行scheduler_unit::cycle()。
+  //下面这段代码其实是在模拟调度器的轮循，Volta架构每个Shader Core有4个调度器，第一拍调度时，选择第
+  //0个调度器先往前推进一拍，接着是1、2、3个调度器前推进一拍；下一拍则先把第1个调度器往前推进一拍，接
+  //着是2、3、0个调度器前推进一拍；以此类推。
   for (unsigned i = 0; i < schedulers.size(); i++) {
     j = (Issue_Prio + i) % schedulers.size();
+    //调度器向前推进一拍，包括执行从warp的m_ibuffer中取值，SIMT堆栈检查，计分板检查，流水线单元检查，
+    //最后将执行写入对应的流水线单元前的寄存器集合，并进行功能模拟。需要注意，先执行哪个调度器有一次调
+    //度（这里采用的是轮询策略调度），在选定某个调度器执行的时候，隶属于该调度器的哪个warp先执行也有一次调
+    //度（这里V100配置采用的是LRR最近最少被使用策略调度）。
     schedulers[j]->cycle();
   }
   Issue_Prio = (Issue_Prio + 1) % schedulers.size();
@@ -1337,6 +1488,45 @@ void shader_core_ctx::issue() {
 }
 
 shd_warp_t &scheduler_unit::warp(int i) { return *((*m_warp)[i]); }
+
+//LRR调度策略的调度器单元的order_lrr函数，为当前调度单元内所划分到的warp进行排序。order_lrr的定义
+//为：
+//     void scheduler_unit::order_lrr(
+//         std::vector<T> &result_list, const typename std::vector<T> &input_list,
+//         const typename std::vector<T>::const_iterator &last_issued_from_input,
+//         unsigned num_warps_to_add)
+//参数列表：
+//result_list：m_next_cycle_prioritized_warps是一个vector，里面存储当前调度单元当前拍经过warp
+//             排序后，在下一拍具有优先级调度的warp。
+//input_list：m_supervised_warps，是一个vector，里面存储当前调度单元所需要仲裁的warp。
+//last_issued_from_input：则存储了当前调度单元上一拍调度过的warp。
+//num_warps_to_add：m_supervised_warps.size()，则是当前调度单元在下一拍需要调度的warp数目，在这
+//                  里这个warp数目就是当前调度器所划分到的warp子集合m_supervised_warps的大小。
+//这个函数的功能就是根据上一拍调度过的warp，找到它在当前调度单元所需要仲裁的warp集合中的位置，然后
+//从这个位置后面的warp起始，遍历当前调度单元所需要仲裁的warp集合，并将这些warp放入result_list中，
+//直到result_list中的warp数目等于num_warps_to_add。
+template <class T>
+void scheduler_unit::order_lrr(
+    std::vector<T> &result_list, const typename std::vector<T> &input_list,
+    const typename std::vector<T>::const_iterator &last_issued_from_input,
+    unsigned num_warps_to_add) {
+  assert(num_warps_to_add <= input_list.size());
+  result_list.clear();
+  //如果当前调度单元上一拍调度过的warp不在当前调度单元所需要仲裁的warp集合中，则将其置为当前调度单
+  //元所需要仲裁的warp集合的第一个warp；而如果当前调度单元上一拍调度过的warp在当前调度单元所需要仲
+  //裁的warp集合中，则将其置为按照顺序它的下一个warp。
+  typename std::vector<T>::const_iterator iter =
+      (last_issued_from_input == input_list.end()) ? input_list.begin()
+                                                   : last_issued_from_input + 1;
+  //对当前调度单元所需要仲裁的warp集合进行遍历，将这些warp按照从上段代码找到的上一拍调度过的warp的
+  //下一个warp开始直到所有warp都遍历一遍的顺序，放入result_list中。
+  for (unsigned count = 0; count < num_warps_to_add; ++iter, ++count) {
+    if (iter == input_list.end()) {
+      iter = input_list.begin();
+    }
+    result_list.push_back(*iter);
+  }
+}
 
 /**
  * A general function to order things in a Loose Round Robin way. The simplist
@@ -1360,25 +1550,6 @@ shd_warp_t &scheduler_unit::warp(int i) { return *((*m_warp)[i]); }
  * then only the warps with highest RR priority will be placed in the
  * result_list.
  */
-template <class T>
-void scheduler_unit::order_lrr(
-    std::vector<T> &result_list, const typename std::vector<T> &input_list,
-    const typename std::vector<T>::const_iterator &last_issued_from_input,
-    unsigned num_warps_to_add) {
-  assert(num_warps_to_add <= input_list.size());
-  result_list.clear();
-  typename std::vector<T>::const_iterator iter =
-      (last_issued_from_input == input_list.end()) ? input_list.begin()
-                                                   : last_issued_from_input + 1;
-
-  for (unsigned count = 0; count < num_warps_to_add; ++iter, ++count) {
-    if (iter == input_list.end()) {
-      iter = input_list.begin();
-    }
-    result_list.push_back(*iter);
-  }
-}
-
 template <class T>
 void scheduler_unit::order_rrr(
     std::vector<T> &result_list, const typename std::vector<T> &input_list,
@@ -1456,20 +1627,42 @@ Shader Core里的单个调度器单元向前推进一拍，执行scheduler_unit:
 */
 void scheduler_unit::cycle() {
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
-  //有一个warp需要发出有效的指令（由于控制危险，不需要flush）。
+  // These three flags match the valid, ready, and issued state of warps in
+  // the scheduler.
+  //ibuffer中取出的PC值与SIMT堆栈中的PC值匹配，则说明没有控制冒险，设置为真
   bool valid_inst =
       false;  // there was one warp with a valid instruction to issue (didn't
               // require flush due to control hazard)
+  //指令通过记分板检查，就可以将指令ready状态设置为true。
   bool ready_inst = false;   // of the valid instructions, there was one not
                              // waiting for pending register writes
+  //指令发射成功后，设置issued_inst为真。
   bool issued_inst = false;  // of these we issued one
 
-  //warp是根据某些策略重新排序的，这是不同调度器之间的主要区别。
+  //warp是根据某些策略重新排序的，这是不同调度器之间的主要区别。对于V100来说，采用LRR调度策略，
+  //LRR调度策略的调度器单元的order_warps()函数，为当前调度单元内所划分到的warp进行排序。它会
+  //再调用：
+  //order_lrr(m_next_cycle_prioritized_warps, m_supervised_warps,
+  //          m_last_supervised_issued, m_supervised_warps.size());
+  //其参数列表为：
+  //    result_list：m_next_cycle_prioritized_warps是一个vector，里面存储当前调度单元当前拍
+  //                 经过warp排序后，在下一拍具有优先级调度的warp。
+  //    input_list：m_supervised_warps，是一个vector，里面存储当前调度单元所需要仲裁的warp。
+  //    last_issued_from_input：则存储了当前调度单元上一拍调度过的warp。
+  //    num_warps_to_add：m_supervised_warps.size()，则是当前调度单元在下一拍需要调度的warp
+  //                      数目，在这里这个warp数目就是当前调度器所划分到的warp子集合的大小。
+  //这个函数的功能就是根据上一拍调度过的warp，找到它在当前调度单元所需要仲裁的warp集合中的位置，
+  //然后从这个位置后面的第一个warp起始，一直遍历当前调度单元所需要仲裁的warp集合，并将这些warp放
+  //入result_list中，直到result_list中的warp数目等于num_warps_to_add。
   order_warps();
+  //Loop through all the warps based on the order
+  //m_next_cycle_prioritized_warps里存储了排序后的下一拍应优先调度的warp顺序，遍历整个优先级的
+  //warp列表，依次进行调度。
   for (std::vector<shd_warp_t *>::const_iterator iter =
            m_next_cycle_prioritized_warps.begin();
        iter != m_next_cycle_prioritized_warps.end(); iter++) {
     // Don't consider warps that are not yet valid
+    //如果warp不是有效的，即没有有效的指令，或者warp已经执行完毕，则跳过调度该warp。
     if ((*iter) == NULL || (*iter)->done_exit()) {
       continue;
     }
@@ -1477,9 +1670,15 @@ void scheduler_unit::cycle() {
                   (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
     unsigned warp_id = (*iter)->get_warp_id();
     unsigned checked = 0;
+    //当前warp中发射的指令计数值。
     unsigned issued = 0;
+    //当前warp中记录上一次发射的指令的执行单元类型。
     exec_unit_type_t previous_issued_inst_exec_type = exec_unit_type_t::NONE;
+    //每个warp单次的最大发射指令数，在V100配置中设置为1。
     unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
+    //仅允许向不同的硬件单元双发射，在V100配置中设置为1。diff_exec_units是仅允许向不同的硬件单
+    //元双发射，在V100配置中设置为1，因此这里在同一拍同一个warp调度器不能向同一硬件单元发射两条
+    //及以上指令，所以这里要判断一下当前的warp是否上一条是存储指令，不是的话才可继续发射。
     bool diff_exec_units =
         m_shader->m_config
             ->gpgpu_dual_issue_diff_exec_units;  // In tis mode, we only allow
@@ -1487,20 +1686,30 @@ void scheduler_unit::cycle() {
                                                  // units (as in Maxwell and
                                                  // Pascal)
 
+    //返回I-Bufer是否为空。这里一个warp有一个I-Bufer，I-Bufer是一个队列，存储了当前warp中的待
+    //执行指令。
     if (warp(warp_id).ibuffer_empty())
       SCHED_DPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as ibuffer_empty\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
-
+    //返回warp是否由于（warp已经执行完毕且在等待新内核初始化、CTA处于barrier、memory barrier、
+    //还有未完成的原子操作）四个条件处于等待状态。
     if (warp(warp_id).waiting())
       SCHED_DPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
+    //checked是下面循环的循环次数，即在当前可调度的warp下，执行检测这个warp的可发射指令数至多为
+    //max_issue，在V100配置中为1，即无论这个循环中有没有将指令发射出去，都不能再进行第二轮循环，
+    //因为单个warp被配置为每次至多调度一条指令。issued是当前warp中记录的发射的指令计数值，该值不
+    //能超过当前warp的最大可发射指令数max_issue。同时，checked次数必须保证小于等于issued，因为
+    //一旦checked次数大于issued，则说明在已经检查过的指令中，最后一条指令因为某种原因没有发射成
+    //功，这时候我们就要暂停当前warp的调度，以保证指令执行的正确性。
     while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
            (checked < max_issue) && (checked <= issued) &&
            (issued < max_issue)) {
+      //对warp_id代表的warp，获取其ibuffer中的下一条指令。
       const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
       // Jin: handle cdp latency;
       if (pI && pI->m_is_cdp && warp(warp_id).m_cdp_latency > 0) {
@@ -1508,51 +1717,80 @@ void scheduler_unit::cycle() {
         warp(warp_id).m_cdp_latency--;
         break;
       }
-
+      //获取ibuffer中的下一条指令，即刚刚取出的指令pI是否有效。
       bool valid = warp(warp_id).ibuffer_next_valid();
+      //标志位，指示warp是否发射了指令。
       bool warp_inst_issued = false;
+      //warp_id对应的SIMT堆栈顶部的PC值和RPC值。
       unsigned pc, rpc;
+      //每个warp有自己的SIMT堆栈，获取warp_id对应的SIMT堆栈顶部的PC值和RPC值。
       m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
       SCHED_DPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
           m_shader->m_config->gpgpu_ctx->func_sim->ptx_get_insn_str(pc)
               .c_str());
+      //pI是从ibuffer取出的指令，如果该指令有效。
       if (pI) {
         assert(valid);
+        //简而言之，调度器发现了一个具有有效ibuffer中的warp，而不是等待障碍。获取warp后，
+        //从ibuffer获取指令并检查其是否有效。对于有效指令，如果其pc与当前SIMT堆栈的pc不匹
+        //配，则意味着发生了控制危险，并且ibuffer被刷新。然后，它的源寄存器和目标寄存器被
+        //传递到记分板进行冲突检查。如果它也通过了记分板，检查目标功能单元的ID_OC流水线寄存
+        //器集是否有空闲插槽。如果有，则可以发出指令，循环的inital将中断。否则，若当前warp
+        //中的指令未发出，则检查下一个warp。因此，每个调度程序单元每个周期只发出一条指令。
         if (pc != pI->pc) {
           SCHED_DPRINTF(
               "Warp (warp_id %u, dynamic_warp_id %u) control hazard "
               "instruction flush\n",
               (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
           // control hazard
+          //将warp下一次执行的指令PC值设置为从SIMT堆栈中取出的PC。
           warp(warp_id).set_next_pc(pc);
+          //刷新warp的ibuffer，因为ibuffer此刻已有的指令已经不会再执行。
           warp(warp_id).ibuffer_flush();
         } else {
+          //如果ibuffer中取出的PC值与SIMT堆栈中的PC值匹配，则说明没有控制冒险，设置为真。
           valid_inst = true;
+          //检测计分板的冒险，检测某个指令使用的寄存器是否被保留在记分板中，如果有的话就是
+          //发生了 WAW 或 RAW 冒险，则不发射该条指令。
           if (!m_scoreboard->checkCollision(warp_id, pI)) {
             SCHED_DPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+            //一旦指令通过记分板检查，就可以将指令ready状态设置为true。
             ready_inst = true;
-
+            //获取warp_id对应的指令pI的活跃掩码。
             const active_mask_t &active_mask =
                 m_shader->get_active_mask(warp_id, pI);
 
             assert(warp(warp_id).inst_in_pipeline());
 
+            //MEM相关的指令，需要发送到m_mem_out流水线寄存器。
             if ((pI->op == LOAD_OP) || (pI->op == STORE_OP) ||
                 (pI->op == MEMORY_BARRIER_OP) ||
                 (pI->op == TENSOR_CORE_LOAD_OP) ||
                 (pI->op == TENSOR_CORE_STORE_OP)) 
             {
+              //m_id是调度器单元的ID，m_mem_out是调度器单元的m_mem_out流水线寄存器。如
+              //果m_mem_out流水线寄存器有空闲插槽，且不支持向不同的硬件单元双发射，或者允
+              //许向不同的硬件单元双发射，但是上一条指令的执行单元类型不是MEM相关，则可以
+              //发射。在subcore模式下，每个warp调度器在寄存器集合中有一个具体的寄存器可供
+              //使用，这个寄存器由调度器的m_id索引。这里就是去查找m_mem_out寄存器集合中的
+              //m_id号调度器仅能使用的第m_id号寄存器是否为空可用，同时，diff_exec_units
+              //是仅允许向不同的硬件单元双发射，在V100配置中设置为1，因此这里在同一拍同一
+              //个warp调度器不能向同一硬件单元发射两条及以上指令，所以这里要判断一下当前的
+              //warp是否上一条是存储指令，不是的话才可继续发射。
               if (m_mem_out->has_free(m_shader->m_config->sub_core_model,
                                       m_id) &&
                   (!diff_exec_units ||
                    previous_issued_inst_exec_type != exec_unit_type_t::MEM)) {
+                //向m_mem_out流水线寄存器发射指令pI。
                 m_shader->issue_warp(*m_mem_out, pI, active_mask, warp_id,
                                      m_id);
+                //发射的指令计数值加一。
                 issued++;
+                //指令发射成功后，设置issued_inst为真。
                 issued_inst = true;
                 warp_inst_issued = true;
                 previous_issued_inst_exec_type = exec_unit_type_t::MEM;
@@ -1745,9 +1983,11 @@ void scheduler_unit::cycle() {
                m_supervised_warps.begin();
            supervised_iter != m_supervised_warps.end(); ++supervised_iter) {
         if (*iter == *supervised_iter) {
+          //m_last_supervised_issued是指代上一次调度的warp。
           m_last_supervised_issued = supervised_iter;
         }
       }
+      //记录上一拍发射的指令数。
       m_num_issued_last_cycle = issued;
       if (issued == 1)
         m_stats->single_issue_nums[m_id]++;
@@ -1761,6 +2001,12 @@ void scheduler_unit::cycle() {
   }
 
   // issue stall statistics:
+  //ibuffer中取出的PC值与SIMT堆栈中的PC值匹配，则说明没有控制冒险，设置为真：
+  //    bool valid_inst=False说明Idle或者由控制冒险。
+  //指令通过记分板检查，就可以将指令ready状态设置为true：
+  //    bool ready_inst=False说明等待RAW冒险（可能是由于内存）。
+  //指令发射成功后，设置issued_inst为真：
+  //    bool issued_inst=False说明流水线停顿。
   if (!valid_inst)
     m_stats->shader_cycle_distro[0]++;  // idle or control hazard
   else if (!ready_inst)
@@ -1793,6 +2039,18 @@ bool scheduler_unit::sort_warps_by_oldest_dynamic_id(shd_warp_t *lhs,
   }
 }
 
+/*
+LRR调度策略的调度器单元的order_warps()函数，为当前调度单元内所划分到的warp进行排序。order_lrr
+的定义为：
+    void scheduler_unit::order_lrr(
+        std::vector<T> &result_list, const typename std::vector<T> &input_list,
+        const typename std::vector<T>::const_iterator &last_issued_from_input,
+        unsigned num_warps_to_add)
+从这里看出，m_next_cycle_prioritized_warps是一个vector，里面存储了当前调度单元当前拍经过warp
+排序后，在下一拍具有优先级调度的warp。last_issued_from_input则存储了当前调度单元上一拍调度过的
+warp。num_warps_to_add则是当前调度单元在下一拍需要调度的warp数目，在这里这个warp数目就是当前调
+度器所划分到的warp子集合m_supervised_warps的大小。
+*/
 void lrr_scheduler::order_warps() {
   order_lrr(m_next_cycle_prioritized_warps, m_supervised_warps,
             m_last_supervised_issued, m_supervised_warps.size());
@@ -1914,7 +2172,13 @@ void swl_scheduler::order_warps() {
   }
 }
 
+/*
+模拟操作数收集器从寄存器文件读取指令的源操作数，将原先暂存在收集器单元指令槽m_warp中的指令推出到
+m_output_register中。
+*/
 void shader_core_ctx::read_operands() {
+  //m_config->reg_file_port_throughput是寄存器文件的端口数。在V100配置文件里gpgpu_reg_file_
+  //port_throughput被设置为2。
   for (int i = 0; i < m_config->reg_file_port_throughput; ++i)
     m_operand_collector.step();
 }
@@ -2007,11 +2271,17 @@ int shader_core_ctx::test_res_bus(int latency) {
   return -1;
 }
 
+/*
+SM的执行。
+*/
 void shader_core_ctx::execute() {
   for (unsigned i = 0; i < num_result_bus; i++) {
     *(m_result_bus[i]) >>= 1;
   }
   for (unsigned n = 0; n < m_num_function_units; n++) {
+    //m_fu是SIMD功能单元的向量。m_fu包含：
+    //  4个SP单元，4个DP单元，4个INT单元，4个SFU单元，4个TC单元，多个或零个specialized_unit，
+    //  1个LD/ST单元。
     unsigned multiplier = m_fu[n]->clock_multiplier();
     for (unsigned c = 0; c < multiplier; c++) m_fu[n]->cycle();
     m_fu[n]->active_lanes_in_pipeline();
@@ -2461,7 +2731,10 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
 }
 
 /*
-LD/ST单元的响应FIFO中的数据包数 >= GPU配置的弹出缓冲器中的最大响应包数。
+LD/ST单元的响应FIFO中的数据包数 >= GPU配置的响应队列中的最大响应包数。这里需要注意的是，LD/ST单元也有一个
+m_response_fifo，且m_response_fifo.size()获取的是该fifo已经存储的mf数目，这个数目能够判断该fifo是否已满，
+m_config->ldst_unit_response_queue_size则是配置的该fifo的最大容量，一旦m_response_fifo.size()等于配置
+的最大容量，就会返回True，表示该fifo已满。
 */
 bool ldst_unit::response_buffer_full() const {
   return m_response_fifo.size() >= m_config->ldst_unit_response_queue_size;
@@ -2684,6 +2957,9 @@ void int_unit ::issue(register_set &source_reg) {
   pipelined_simd_unit::issue(source_reg);
 }
 
+/*
+流水线单元构造函数。
+*/
 pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
                                          const shader_core_config *config,
                                          unsigned max_latency,
@@ -2692,6 +2968,7 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
     : simd_function_unit(config) {
   m_result_port = result_port;
   m_pipeline_depth = max_latency;
+  //m_pipeline_reg是一个数组，该数组的大小模拟流水线的深度，每个元素是一个warp_inst_t类型的指针。
   m_pipeline_reg = new warp_inst_t *[m_pipeline_depth];
   for (unsigned i = 0; i < m_pipeline_depth; i++)
     m_pipeline_reg[i] = new warp_inst_t(config);
@@ -2700,29 +2977,75 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
   active_insts_in_pipeline = 0;
 }
 
+/*
+流水线单元向前推进一拍。
+m_pipeline_reg的定义：warp_inst_t **m_pipeline_reg;
+它做以下事情：
+1. 如果dispatch_reg不为空，并且dispatch delay已完成，则上下文将从调度寄存器移动到流水线的调度延迟阶段。
+2. 在内部流水线寄存器之间移动指令。
+3. 如果最后一个内部流水线寄存器不为空，则将其发送到输出端口（通常为EX_WB流水线寄存器集）。
+
+Dispatch Delay：
+在V100的trace.config文件中：
+    #tensor unit
+    -specialized_unit_3 1,4,8,4,4,TENSOR
+    -trace_opcode_latency_initiation_spec_op_3 8,4      # <latency,initiation>
+
+在第二行中，它有两个值：8和4。前者是latency，后者是initiation_interval。initiation_interval是调度延迟，
+latency是管道中管道阶段的数量。换句话说，每次initiation_interval都可以向功能单元发出指令。指令通过功能单
+元需要等待周期。此处的start_stage：
+    int start_stage = m_dispatch_reg->latency - m_dispatch_reg->initiation_interval;
+说明指令在每个周期都要经过流水线阶段，但调度单元的上下文在initiation_interval周期中不能更改。
+
+☆ 即在V100中，这里spec_op_3类型的指令执行需要8拍，在发射指令后，指令被移入m_dispatch_reg调度寄存器，然后
+在调度寄存器里等待4拍，这4拍内不允许别的spec_op_3类型指令进入调度寄存器，4拍后，该指令被移入m_pipeline_reg
+的第8-4=4号槽，然后在m_pipeline_reg中等待4槽->3槽->2槽->1槽共4拍后，该指令被移入EX_WB流水线寄存器集。
+*/
 void pipelined_simd_unit::cycle() {
+  // pipeline reg 0 is not empty
+  //从下面的move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1])可以看出，m_pipeline_reg[0]
+  //是模拟流水线深度即执行延迟的最后一个槽，因此，在判断m_pipeline_reg是否向EX_WB阶段发出时，要看第0号槽
+  //是否为空。
   if (!m_pipeline_reg[0]->empty()) {
+    // put m_pipeline_reg[0] to the EX_WB reg
+    //将m_pipeline_reg[0]中的执行移入EX_WB流水线寄存器集。
     m_result_port->move_in(m_pipeline_reg[0]);
     assert(active_insts_in_pipeline > 0);
+    //m_pipeline_reg[0]中的指令移出后，流水线中的活跃指令数减1。
     active_insts_in_pipeline--;
   }
+  // move warp_inst_t through out the pipeline
+  //m_pipeline_reg流水线寄存器集中的所有指令向前推进一槽，模拟一拍的执行。
   if (active_insts_in_pipeline) {
     for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
   }
+  // If the dispatch_reg is not empty
+  //如果dispatch_reg不为空，则将其移入m_pipeline_reg流水线。
+  //具体移入哪个位置，要用指令延迟减去在m_dispatch_reg中的初始间隔，这个初始间隔是依据指令的吞吐量设置的。
   if (!m_dispatch_reg->empty()) {
+    // If not dispatch_delay
     if (!m_dispatch_reg->dispatch_delay()) {
+      // during dispatch delay, the warp is still moving through the pipeline,
+      // though the dispatch_reg cannot be changed
       int start_stage =
           m_dispatch_reg->latency - m_dispatch_reg->initiation_interval;
+      //从m_dispatch_reg移入m_pipeline_reg流水线。
       move_warp(m_pipeline_reg[start_stage], m_dispatch_reg);
+      //指令移入m_pipeline_reg后，流水线中的活跃指令数减1。
       active_insts_in_pipeline++;
     }
   }
+  //m_dispatch_reg的标识占用位图的状态右移一位，模拟一拍的推进。
   occupied >>= 1;
 }
 
+/*
+将warp_inst_t类型的指令移入dispatch寄存器。
+*/
 void pipelined_simd_unit::issue(register_set &source_reg) {
   // move_warp(m_dispatch_reg,source_reg);
+  //sub_core_model: github.com/accel-sim/accel-sim-framework/blob/dev/gpu-simulator/gpgpu-sim4.md
   bool partition_issue =
       m_config->sub_core_model && this->is_issue_partitioned();
   warp_inst_t **ready_reg =
@@ -2732,6 +3055,9 @@ void pipelined_simd_unit::issue(register_set &source_reg) {
   simd_function_unit::issue(source_reg);
 }
 
+/*
+ldst单元的初始化函数。
+*/
 void ldst_unit::init(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
                      shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
@@ -2752,12 +3078,15 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   char L1C_name[STRSIZE];
   snprintf(L1T_name, STRSIZE, "L1T_%03d", m_sid);
   snprintf(L1C_name, STRSIZE, "L1C_%03d", m_sid);
+  //L1纹理缓存。
   m_L1T = new tex_cache(L1T_name, m_config->m_L1T_config, m_sid,
                         get_shader_texture_cache_id(), icnt, IN_L1T_MISS_QUEUE,
                         IN_SHADER_L1T_ROB);
+  //L1常量缓存。
   m_L1C = new read_only_cache(L1C_name, m_config->m_L1C_config, m_sid,
                               get_shader_constant_cache_id(), icnt,
                               IN_L1C_MISS_QUEUE);
+  //L1数据缓存。
   m_L1D = NULL;
   m_mem_rc = NO_RC_FAIL;
   m_num_writeback_clients =
@@ -2768,6 +3097,9 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_last_inst_gpu_tot_sim_cycle = 0;
 }
 
+/*
+ldst单元的构造函数。
+*/
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
                      shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
@@ -3843,38 +4175,66 @@ void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
 
 // modifiers
+/*
+操作数收集器的仲裁器，用于分配读操作。
+*/
 std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
+  //create a list of results
+  //创建一个结果列表，(a)在不同的寄存器文件Bank，(b)不走向相同的操作数收集器。
   std::list<op_t>
       result;  // a list of registers that (a) are in different register banks,
                // (b) do not go to the same operand collector
 
+  // input the the register bank
+  // output is the collector units
   int input;
   int output;
+  //_inputs是寄存器文件的Bank数。
   int _inputs = m_num_banks;
+  //_outputs是操作数收集器的数量。
   int _outputs = m_num_collectors;
+  //对应到MAP对角顺序检查图的最大维度，或长度或宽度。
   int _square = (_inputs > _outputs) ? _inputs : _outputs;
   assert(_square > 0);
+  //_pri是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的下一个收
+  //集器单元的ID。
   int _pri = (int)m_last_cu;
 
-  // Clear matching
+  // Clear matching: set all the entries to -1
+  //_inmatch[i]是第i个Bank的可匹配操作数收集器ID，如果该值不为-1或0，则说明它已经匹配到。
   for (int i = 0; i < _inputs; ++i) _inmatch[i] = -1;
+  //_outmatch[j]是第j个操作数收集器的可匹配Bank的ID，如果该值不为-1或0，则说明它已经匹配到。
   for (int j = 0; j < _outputs; ++j) _outmatch[j] = -1;
 
+  //对所有的寄存器文件Bank进行循环。
   for (unsigned i = 0; i < m_num_banks; i++) {
+    //_request[m_num_banks][m_num_collectors]是指某个收集器单元对某个寄存器Bank是否有请求，
+    //有则置1，无则置0。下面的一个for循环对所有的收集器单元和所有的寄存器Bank进行循环，设置所
+    //有的请求数量为0。
     for (unsigned j = 0; j < m_num_collectors; j++) {
       assert(i < (unsigned)_inputs);
       assert(j < (unsigned)_outputs);
+      //设置第j个收集器单元对第i个寄存器文件Bank的请求置0。
       _request[i][j] = 0;
     }
+    //m_queue是一个以bank号来索引的操作数队列，m_queue[i]是第i个bank获取的操作数队列。如果这
+    //个队列不为空，说明这个bank有操作数请求已经存入m_queue。
     if (!m_queue[i].empty()) {
       const op_t &op = m_queue[i].front();
+      //op.get_oc_id()返回当前操作数所属的收集器单元的ID。
       int oc_id = op.get_oc_id();
       assert(i < (unsigned)_inputs);
       assert(oc_id < _outputs);
+      //第oc_id个收集器单元对第i个寄存器文件Bank的请求数量置1。
       _request[i][oc_id] = 1;
     }
+    //m_allocated_bank[i]用于存储第i个Bank的状态，包括NO_ALLOC, READ_ALLOC, WRITE_ALLOC。
+    //如果第i个Bank是WRITE_ALLOC，说明这个Bank已经被分配给某个收集器单元，这个收集器单元正在
+    //执行写操作，因此，这个Bank不能被分配给其他收集器单元。
     if (m_allocated_bank[i].is_write()) {
       assert(i < (unsigned)_inputs);
+      //当第i个Bank是WRITE_ALLOC时，第i个Bank对于所有的收集器单元来说都不可分配为读操作，所以
+      //这里设置_inmatch中的第i个Bank的可匹配状态为0。写操作具有更高的优先级。
       _inmatch[i] = 0;  // write gets priority
     }
   }
@@ -3884,13 +4244,48 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
   // Loop through diagonals of request matrix
   // printf("####\n");
 
+  //对所有操作数收集器循环。这里检查的顺序是按照对角线检查的，例如，如果有5个收集器单元，3个Bank，
+  //则_square=5，_outputs=5，_inputs=3，如果设置_pri=2的话，下面的两层for循环会按照下面的顺序
+  //进行检查：
+  //    order    input    output
+  //      1        0         2
+  //      2        1         3
+  //      3        2         4
+  //      4        0         3
+  //      5        1         4
+  //      6        2         0
+  //      7        0         4
+  //      8        1         0
+  //      9        2         1
+  //      10       0         0
+  //      11       1         1
+  //      12       2         2
+  //      13       0         1
+  //      14       1         2
+  //      15       2         3
+  //对应到MAP对角顺序检查图为：
+  //                   _output
+  //             0    1    2    3    4
+  //           |----|----|----|----|----|
+  //         0 | 10 | 13 |  1 |  4 |  7 |
+  //           |----|----|----|----|----|
+  // _input  1 |  8 | 11 | 14 |  2 |  5 |
+  //           |----|----|----|----|----|
+  //         2 |  6 |  9 | 12 | 15 |  3 |
+  //           |----|----|----|----|----|
   for (int p = 0; p < _square; ++p) {
+    //_pri是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的下一个收
+    //集器单元的ID。这里是当前执行arbiter_t::allocate_reads()函数时，从上一次最后一个被分配的
+    //收集器单元的下一个收集器单元的ID开始遍历，RR循环。
     output = (_pri + p) % _outputs;
 
     // Step through the current diagonal
     for (input = 0; input < _inputs; ++input) {
       assert(input < _inputs);
       assert(output < _outputs);
+      //如果第input个Bank没有被分配给某个收集器单元，且第output个收集器单元对第input个Bank有请
+      //求，那么就分配第input个Bank给第output个收集器单元。设置_inmatch中的第input个Bank的可匹
+      //配收集器单元为output，设置_outmatch中的第output个收集器单元的可匹配Bank为input。
       if ((output < _outputs) && (_inmatch[input] == -1) &&
           //( _outmatch[output] == -1 ) &&   //allow OC to read multiple reg
           // banks at the same cycle
@@ -3903,19 +4298,25 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
         // (m_queue[input].front()).get_wid(),
         // (m_queue[input].front()).get_reg());
       }
-
+      //由于要保证
       output = (output + 1) % _outputs;
     }
   }
 
   // Round-robin the priority diagonal
+  //_pri是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的下一个收集
+  //器单元的ID。
   _pri = (_pri + 1) % _outputs;
 
   /// <--- end code from booksim
-
+  //m_last_cu是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的ID。
   m_last_cu = _pri;
+  //对所有的寄存器文件Bank进行循环。
   for (unsigned i = 0; i < m_num_banks; i++) {
+    //如果存在分配给第i号Bank的操作数收集器。
     if (_inmatch[i] != -1) {
+      //判断第i号Bank是否已经被分配给某个收集器单元用于写操作，如果不是写操作的话（即为读操作），
+      //则将对应读第i号Bank的请求队列m_queue中的首个操作数请求放入result。
       if (!m_allocated_bank[i].is_write()) {
         unsigned bank = (unsigned)i;
         op_t &op = m_queue[bank].front();
@@ -4205,7 +4606,10 @@ void shader_core_ctx::accept_fetch_response(mem_fetch *mf) {
 }
 
 /*
-返回LDST单元响应buffer是否已满。
+返回LDST单元响应buffer是否已满。LD/ST单元的响应FIFO中的数据包数 >= GPU配置的响应队列中的最大响应包数。这
+里需要注意的是，LD/ST单元也有一个m_response_fifo，且m_response_fifo.size()获取的是该fifo已经存储的mf数
+目，这个数目能够判断该fifo是否已满，m_config->ldst_unit_response_queue_size则是配置的该fifo的最大容量，
+一旦m_response_fifo.size()等于配置的最大容量，就会返回True，表示该fifo已满。
 */
 bool shader_core_ctx::ldst_unit_response_buffer_full() const {
   return m_ldst_unit->response_buffer_full();
@@ -4271,6 +4675,17 @@ bool shd_warp_t::functional_done() const {
 这段代码检查这个warp是否已经完成执行并且可以回收。
 */
 bool shd_warp_t::hardware_done() const {
+  //functional_done()返回warp已经执行完毕的标志，已经完成的线程数量=warp的大小时，就代表该warp已经
+  //完成。stores_done()返回所有store访存请求是否已经全部执行完，已发送但尚未确认的写存储请求（已经发
+  //出写请求，但还没收到写确认信号时）数m_stores_outstanding=0时，代表所有store访存请求已经全部执行
+  //完，这里m_stores_outstanding在发出一个写请求时+=1，在收到一个写确认时-=1。
+  //m_inst_fetch_buffer中含有效指令时且将该指令解码过程中填充进warp的m_ibuffer时，增加在流水线中的
+  //指令数m_inst_in_pipeline（注意这里在decode()函数中会向warp的m_ibuffer填充进2条指令）；在指令完
+  //成写回操作时减少在流水线中的指令数m_inst_in_pipeline。inst_in_pipeline()返回流水线中的指令数量
+  //m_inst_in_pipeline。
+
+  //这里一个warp完成的标志由三个条件组成，分别是：1、warp已经执行完毕；2、所有store访存请求已经全部执
+  //行完；3、流水线中的指令数量为0。
   return functional_done() && stores_done() && !inst_in_pipeline();
 }
 
@@ -4337,20 +4752,158 @@ void shd_warp_t::print_ibuffer(FILE *fout) const {
   fprintf(fout, "\n");
 }
 
+/*
+增加collector unit的数量。这里的set_id定义为：
+    enum { SP_CUS, DP_CUS, SFU_CUS, TENSOR_CORE_CUS, INT_CUS, MEM_CUS, GEN_CUS };
+这里是collector unit有7个，对应于SP单元一个，对应于DP单元一个，......。这里num_cu即为对应于各个单
+元的collector unit的表项，在调用时gpgpu_operand_collector_num_units_sp即为对应于SP单元的CU表项数：
+    m_operand_collector.add_cu_set(
+            SP_CUS, m_config->gpgpu_operand_collector_num_units_sp,
+            m_config->gpgpu_operand_collector_num_out_ports_sp);
+在下面的代码中，m_cus[set_id]是对应于set_id指示的单元的collector unit的表项，而m_cu包含了所有收集器
+单元。
+
+这里很容易混淆，m_cus是一个字典，其定义为：
+  typedef std::map<unsigned collector_set_id,      // 收集器单元的set_id
+                   std::vector<collector_unit_t>>  // 收集器单元的向量
+          cu_sets_t;
+
+在V100配置中，对于每个set_id，收集器单元的数目为：
+   //SP_CUS           gpgpu_operand_collector_num_units_sp = 4
+   //DP_CUS           gpgpu_operand_collector_num_units_dp = 0
+   //SFU_CUS          gpgpu_operand_collector_num_units_sfu = 4
+   //INT_CUS          gpgpu_operand_collector_num_units_int = 0
+   //TENSOR_CORE_CUS  gpgpu_operand_collector_num_units_tensor_core = 4
+   //MEM_CUS          gpgpu_operand_collector_num_units_mem = 2
+   //GEN_CUS          gpgpu_operand_collector_num_units_gen = 8
+
+即这里：
+    m_cus[SP_CUS         ]是一个vector，存储了SP         单元的4个收集器单元；
+    m_cus[DP_CUS         ]是一个vector，存储了DP         单元的0个收集器单元；
+    m_cus[SFU_CUS        ]是一个vector，存储了SFU        单元的4个收集器单元；
+    m_cus[INT_CUS        ]是一个vector，存储了INT        单元的0个收集器单元；
+    m_cus[TENSOR_CORE_CUS]是一个vector，存储了TENSOR_CORE单元的4个收集器单元；
+    m_cus[MEM_CUS        ]是一个vector，存储了MEM        单元的2个收集器单元；
+    m_cus[GEN_CUS        ]是一个vector，存储了GEN        单元的8个收集器单元。
+
+而m_cu定义：
+    collector_unit_t *m_cu;
+存储了上述所有的收集器单元，即m_cu是一个vector，存储了所有的收集器单元。
+*/
 void opndcoll_rfu_t::add_cu_set(unsigned set_id, unsigned num_cu,
                                 unsigned num_dispatch) {
+  //m_cus是set_id对应收集器单元的的字典。
   m_cus[set_id].reserve(num_cu);  // this is necessary to stop pointers in m_cu
                                   // from being invalid do to a resize;
   for (unsigned i = 0; i < num_cu; i++) {
+    //增加收集器单元。m_cus[set_id]是set_id对应收集器单元。这里的set_id定义为：
+    //    enum { SP_CUS, DP_CUS, SFU_CUS, TENSOR_CORE_CUS, INT_CUS, MEM_CUS, GEN_CUS };
     m_cus[set_id].push_back(collector_unit_t());
+    //m_cu是所有收集器单元的集合，包括所有的m_cus字典中的所有收集器单元。
     m_cu.push_back(&m_cus[set_id].back());
   }
   // for now each collector set gets dedicated dispatch units.
+  //目前，每个收集器set都有专用的调度单元，由gpgpu_operand_collector_num_out_ports_sp等确定。在
+  //V100配置中：
+  //    gpgpu_operand_collector_num_out_ports_sp = 1
+  //    gpgpu_operand_collector_num_out_ports_dp = 0
+  //    gpgpu_operand_collector_num_out_ports_sfu = 1
+  //    gpgpu_operand_collector_num_out_ports_int = 0
+  //    gpgpu_operand_collector_num_out_ports_tensor_core = 1
+  //    gpgpu_operand_collector_num_out_ports_mem = 1
+  //    gpgpu_operand_collector_num_out_ports_gen = 8
+  //这里调度单元的数目与输出端口的数目一致，即：
+  //    对应于m_cus[SP_CUS         ]有1个调度器；
+  //    对应于m_cus[DP_CUS         ]有0个调度器；
+  //    对应于m_cus[SFU_CUS        ]有1个调度器；
+  //    对应于m_cus[INT_CUS        ]有0个调度器；
+  //    对应于m_cus[TENSOR_CORE_CUS]有1个调度器；
+  //    对应于m_cus[MEM_CUS        ]有1个调度器；
+  //    对应于m_cus[GEN_CUS        ]有8个调度器。
+  //m_cus[set_id]，对应于set_id的收集器单元：
+  //    m_cus[SP_CUS         ]是一个vector，存储了SP         单元的4个收集器单元；
+  //    m_cus[DP_CUS         ]是一个vector，存储了DP         单元的0个收集器单元；
+  //    m_cus[SFU_CUS        ]是一个vector，存储了SFU        单元的4个收集器单元；
+  //    m_cus[INT_CUS        ]是一个vector，存储了INT        单元的0个收集器单元；
+  //    m_cus[TENSOR_CORE_CUS]是一个vector，存储了TENSOR_CORE单元的4个收集器单元；
+  //    m_cus[MEM_CUS        ]是一个vector，存储了MEM        单元的2个收集器单元；
+  //    m_cus[GEN_CUS        ]是一个vector，存储了GEN        单元的8个收集器单元。
   for (unsigned i = 0; i < num_dispatch; i++) {
     m_dispatch_units.push_back(dispatch_unit_t(&m_cus[set_id]));
   }
 }
 
+/*
+input_port_t的定义：
+    class input_port_t {
+    public:
+      input_port_t(port_vector_t &input, port_vector_t &output,
+                  uint_vector_t cu_sets)
+          : m_in(input), m_out(output), m_cu_sets(cu_sets) {
+        assert(input.size() == output.size());
+        assert(not m_cu_sets.empty());
+      }
+      // private:
+      //
+      port_vector_t m_in, m_out;
+      uint_vector_t m_cu_sets;
+    };
+port_vector_t的类型定义为存储寄存器集合register_set的向量：
+    typedef std::vector<register_set *> port_vector_t;
+uint_vector_t的类型定义为存储收集器单元set_id的向量：
+    typedef std::vector<unsigned int> uint_vector_t;
+add_port是将发射阶段的几个流水线寄存器集合ID_OC_SP等，以及后续操作数收集器发出的寄存器集
+合OC_EX_SP等，对应于其所属的收集器单元set_id，添加进操作数收集器类。例如:
+    for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_sp;
+         i++) {
+      //m_pipeline_reg的定义：std::vector<register_set> m_pipeline_reg;
+      in_ports.push_back(&m_pipeline_reg[ID_OC_SP]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_SP]);
+      cu_sets.push_back((unsigned)SP_CUS);
+      cu_sets.push_back((unsigned)GEN_CUS);
+      m_operand_collector.add_port(in_ports, out_ports, cu_sets);
+      in_ports.clear(), out_ports.clear(), cu_sets.clear();
+    }
+上段代码就是为SP单元添加端口，根据配置的gpgpu_operand_collector_num_in_ports_sp（SP单
+元进入操作数收集器的端口数目），为SP单元添加输入端口为m_pipeline_reg[ID_OC_SP]、输出端口
+为m_pipeline_reg[OC_EX_SP]，收集器单元set_id为SP_CUS的端口，所有添加进的端口都存储在向
+量m_in_ports中。
+
+因此，m_in_ports对象：
+  0-7 -> {{m_pipeline_reg[ID_OC_SP], m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[ID_OC_MEM],
+           m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[ID_OC_DP], m_pipeline_reg[ID_OC_INT],
+           m_config->m_specialized_unit[0].ID_OC_SPEC_ID, m_config->m_specialized_unit[1].ID_OC_SPEC_ID, 
+           m_config->m_specialized_unit[2].ID_OC_SPEC_ID, m_config->m_specialized_unit[3].ID_OC_SPEC_ID,
+           m_config->m_specialized_unit[4].ID_OC_SPEC_ID, m_config->m_specialized_unit[5].ID_OC_SPEC_ID,
+           m_config->m_specialized_unit[6].ID_OC_SPEC_ID, m_config->m_specialized_unit[7].ID_OC_SPEC_ID},
+          {m_pipeline_reg[OC_EX_SP], m_pipeline_reg[OC_EX_SFU], m_pipeline_reg[OC_EX_MEM],
+           m_pipeline_reg[OC_EX_TENSOR_CORE], m_pipeline_reg[OC_EX_DP], m_pipeline_reg[OC_EX_INT],
+           m_config->m_specialized_unit[0].OC_EX_SPEC_ID, m_config->m_specialized_unit[1].OC_EX_SPEC_ID, 
+           m_config->m_specialized_unit[2].OC_EX_SPEC_ID, m_config->m_specialized_unit[3].OC_EX_SPEC_ID,
+           m_config->m_specialized_unit[4].OC_EX_SPEC_ID, m_config->m_specialized_unit[5].OC_EX_SPEC_ID,
+           m_config->m_specialized_unit[6].OC_EX_SPEC_ID, m_config->m_specialized_unit[7].OC_EX_SPEC_ID},
+          GEN_CUS}
+    8 -> {m_pipeline_reg[ID_OC_SP], m_pipeline_reg[OC_EX_SP], {SP_CUS, GEN_CUS}}
+    9 -> {m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[OC_EX_SFU], {SFU_CUS, GEN_CUS}}
+   10 -> {m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[OC_EX_TENSOR_CORE]
+   11 -> {m_pipeline_reg[ID_OC_MEM], m_pipeline_reg[OC_EX_MEM], {MEM_CUS, GEN_CUS}}
+
+在前面的warp调度器代码里单个Sahder Core内的warp调度器的个数由gpgpu_num_sched_per_core
+配置参数决定，Volta架构每核心有4个warp调度器。每个调度器的创建代码：
+     schedulers.push_back(new lrr_scheduler(
+             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
+             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
+             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
+             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
+             &m_pipeline_reg[ID_OC_MEM], i));
+在发射过程中，warp调度器将可发射的指令按照其指令类型分发给不同的单元，这些单元包括SP/DP/
+SFU/INT/TENSOR_CORE/MEM，在发射过程完成后，需要针对指令通过操作数收集器将指令所需的操作
+数全部收集齐。对于一个SM，对应于一个操作数收集器，调度器的发射过程将指令放入：
+    m_pipeline_reg[ID_OC_SP]、m_pipeline_reg[ID_OC_DP]、m_pipeline_reg[ID_OC_SFU]、
+    m_pipeline_reg[ID_OC_INT]、m_pipeline_reg[ID_OC_TENSOR_CORE]、
+    m_pipeline_reg[ID_OC_MEM]
+等寄存器集合中，用以操作数收集器来收集操作数。
+*/
 void opndcoll_rfu_t::add_port(port_vector_t &input, port_vector_t &output,
                               uint_vector_t cu_sets) {
   // m_num_ports++;
@@ -4364,14 +4917,23 @@ void opndcoll_rfu_t::add_port(port_vector_t &input, port_vector_t &output,
   m_in_ports.push_back(input_port_t(input, output, cu_sets));
 }
 
+/*
+操作数收集器的初始化。num_banks由配置文件的 -gpgpu_num_reg_banks 16 参数确定，在
+V100中配置为16。
+*/
 void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_shader = shader;
   m_arbiter.init(m_cu.size(), num_banks);
   // for( unsigned n=0; n<m_num_ports;n++ )
   //    m_dispatch_units[m_output[n]].init( m_num_collector_units[n] );
+  
+  //在V100配置中，m_num_banks被初始化为16。
   m_num_banks = num_banks;
+  //m_bank_warp_shift被初始化为5。
   m_bank_warp_shift = 0;
+  //m_warp_size = 32。
   m_warp_size = shader->get_config()->warp_size;
+  //m_bank_warp_shift = 5。
   m_bank_warp_shift = (unsigned)(int)(log(m_warp_size + 0.5) / log(2.0));
   assert((m_bank_warp_shift == 5) || (m_warp_size != 32));
 
@@ -4383,12 +4945,24 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
     assert(m_num_warp_scheds <= m_cu.size() &&
            m_cu.size() % m_num_warp_scheds == 0);
   }
+  //每个warp调度器可用的bank。在sub_core_model模式中，每个warp调度器可用的bank数量是
+  //有限的。在V100配置中，共有4个warp调度器，0号warp调度器可用的bank为0-3，1号warp调
+  //度器可用的bank为4-7，2号warp调度器可用的bank为8-11，3号warp调度器可用的bank为12-
+  //15.
   m_num_banks_per_sched =
       num_banks / shader->get_config()->gpgpu_num_sched_per_core;
 
+  //收集器单元列表。收集器单元（m_cu）：每个收集器单元一次可以容纳一条指令。它将向器发
+  //送对源寄存器的请求。一旦所有源寄存器都准备好了，调度单元就可以将其调度到输出流水线
+  //寄存器集（OC_EX）。收集器单元m_cu的定义：
+  //    std::vector<collector_unit_t *> m_cu;
+  //m_cus[set_id]是对应于set_id指示的单元的collector unit的表项，而m_cu包含了所有收
+  //集器单元。m_cu.size()则是所有的收集器单元的总数目。
   for (unsigned j = 0; j < m_cu.size(); j++) {
     if (sub_core_model) {
+      //cusPerSched是每个调度器可用的收集器单元数目。
       unsigned cusPerSched = m_cu.size() / m_num_warp_scheds;
+      //这里reg_id其实是对应的调度器的ID。
       reg_id = j / cusPerSched;
     }
     m_cu[j]->init(j, num_banks, m_bank_warp_shift, shader->get_config(), this,
@@ -4400,11 +4974,35 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_initialized = true;
 }
 
+/*
+在V100配置中，m_num_banks被初始化为16。m_bank_warp_shift被初始化为5。由于在操作数
+收集器的寄存器文件中，warp0的r0寄存器放在0号bank，...，warp0的r15寄存器放在15号bank，
+warp0的r16寄存器放在0号bank，...，warp0的r31寄存器放在15号bank；warp1的r0寄存器放在
+[0+warp_id]号bank，这里以非sub_core_model模式为例：
+
+这里register_bank函数就是用来计算regnum所在的bank数。
+
+Bank0   Bank1   Bank2   Bank3                   ......                  Bank15
+w1:r31  w1:r16  w1:r17  w1:r18                  ......                  w1:r30
+w1:r15  w1:r0   w1:r1   w1:r2                   ......                  w1:r14
+w0:r16  w0:r17  w0:r18  w0:r19                  ......                  w0:r31
+w0:r0   w0:r1   w0:r2   w0:r3                   ......                  w0:r15
+
+在sub_core_model模式中，每个warp调度器可用的bank数量是有限的。在V100配置中，共有4个
+warp调度器，0号warp调度器可用的bank为0-3，1号warp调度器可用的bank为4-7，2号warp调度
+器可用的bank为8-11，3号warp调度器可用的bank为12-15。
+*/
 int register_bank(int regnum, int wid, unsigned num_banks,
                   unsigned bank_warp_shift, bool sub_core_model,
                   unsigned banks_per_sched, unsigned sched_id) {
   int bank = regnum;
+  //warp的bank偏移。
   if (bank_warp_shift) bank += wid;
+  //在subcore模式下，每个warp调度器在寄存器集合中有一个具体的寄存器可供使用，这个寄
+  //存器由调度器的m_id索引。m_num_banks_per_sched的定义为：
+  //    num_banks / shader->get_config()->gpgpu_num_sched_per_core;
+  //在V100配置中，共有4个warp调度器，0号warp调度器可用的bank为0-3，1号warp调度器可
+  //用的bank为4-7，2号warp调度器可用的bank为8-11，3号warp调度器可用的bank为12-15。
   if (sub_core_model) {
     unsigned bank_num = (bank % banks_per_sched) + (sched_id * banks_per_sched);
     assert(bank_num < num_banks);
@@ -4420,10 +5018,12 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
     int reg_num = inst.arch_reg.dst[op];  // this math needs to match that used
                                           // in function_info::ptx_decode_inst
     if (reg_num >= 0) {                   // valid register
+      //m_bank_warp_shift被初始化为5。
       unsigned bank = register_bank(reg_num, inst.warp_id(), m_num_banks,
                                     m_bank_warp_shift, sub_core_model,
                                     m_num_banks_per_sched, inst.get_schd_id());
       if (m_arbiter.bank_idle(bank)) {
+        //m_bank_warp_shift被初始化为5。
         m_arbiter.allocate_bank_for_write(
             bank,
             op_t(&inst, reg_num, m_num_banks, m_bank_warp_shift, sub_core_model,
@@ -4456,13 +5056,69 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
   return true;
 }
 
+/*
+遍历所有调度单元。每个单元找到一个准备好的收集器单元并进行调度。
+*/
 void opndcoll_rfu_t::dispatch_ready_cu() {
+  //目前每个收集器set都有专用的调度单元，由gpgpu_operand_collector_num_out_ports_sp
+  //等确定。在V100配置中：
+  //    gpgpu_operand_collector_num_out_ports_sp = 1
+  //    gpgpu_operand_collector_num_out_ports_dp = 0
+  //    gpgpu_operand_collector_num_out_ports_sfu = 1
+  //    gpgpu_operand_collector_num_out_ports_int = 0
+  //    gpgpu_operand_collector_num_out_ports_tensor_core = 1
+  //    gpgpu_operand_collector_num_out_ports_mem = 1
+  //    gpgpu_operand_collector_num_out_ports_gen = 8
+  //这里调度单元的数目与输出端口的数目一致，即：
+  //    对应于m_cus[SP_CUS         ]有1个调度器；
+  //    对应于m_cus[DP_CUS         ]有0个调度器；
+  //    对应于m_cus[SFU_CUS        ]有1个调度器；
+  //    对应于m_cus[INT_CUS        ]有0个调度器；
+  //    对应于m_cus[TENSOR_CORE_CUS]有1个调度器；
+  //    对应于m_cus[MEM_CUS        ]有1个调度器；
+  //    对应于m_cus[GEN_CUS        ]有8个调度器。
+  //这里是调度器的初始化，调用时：
+  //    for (unsigned i = 0; i < num_dispatch; i++)
+  //      m_dispatch_units.push_back(dispatch_unit_t(&m_cus[set_id]));
+  //传入的参数cus是m_cus[set_id]，对应于set_id的收集器单元：
+  //    m_cus[SP_CUS         ]是一个vector，存储了SP         单元的4个收集器单元；
+  //    m_cus[DP_CUS         ]是一个vector，存储了DP         单元的0个收集器单元；
+  //    m_cus[SFU_CUS        ]是一个vector，存储了SFU        单元的4个收集器单元；
+  //    m_cus[INT_CUS        ]是一个vector，存储了INT        单元的0个收集器单元；
+  //    m_cus[TENSOR_CORE_CUS]是一个vector，存储了TENSOR_CORE单元的4个收集器单元；
+  //    m_cus[MEM_CUS        ]是一个vector，存储了MEM        单元的2个收集器单元；
+  //    m_cus[GEN_CUS        ]是一个vector，存储了GEN        单元的8个收集器单元。
+  //m_dispatch_units里存储了所有的调度器。下面是对所有的调度器进行循环，每个调度器都
+  //向前执行一步。
   for (unsigned p = 0; p < m_dispatch_units.size(); ++p) {
+    //m_dispatch_units[p]是第p个调度器。
     dispatch_unit_t &du = m_dispatch_units[p];
+    //从第p个调度器找到一个空闲准备好可以接收的收集器单元。
     collector_unit_t *cu = du.find_ready();
     if (cu) {
+      //在对PTX指令解析的时候，有计算操作数需要的寄存器个数，m_operands在ptx_ir.h的
+      //ptx_instruction类中定义：
+      //    std::vector<operand_info> m_operands;
+      //m_operands会在每条指令解析的时候将所有操作数都添加到其中，例如解析 mad a,b,c 
+      //指令时，会将 a,b,c三个操作数添加进m_operands，即每一条指令对象有一个操作数向
+      //量m_operands。该过程定义为：
+      //     if (!m_operands.empty()) {
+      //       std::vector<operand_info>::iterator it;
+      //       for (it = ++m_operands.begin(); it != m_operands.end(); it++) {
+      //         //操作数数量计数。
+      //         num_operands++;
+      //         //如果操作数是寄存器或者是矢量，num_regs数量加1。
+      //         if ((it->is_reg() || it->is_vector())) {
+      //           num_regs++;
+      //         }
+      //       }
+      //     }
+      //cu->get_num_operands()返回的是num_operands值，cu->get_num_regs()返回的是
+      //num_regs值。实际上，无论一个操作数是寄存器，向量抑或是立即数，地址等，操作数
+      //数量num_operands都在计数，但是只有寄存器，向量出现的时候num_regs才计数。
       for (unsigned i = 0; i < (cu->get_num_operands() - cu->get_num_regs());
            i++) {
+        //这里m_shader->get_config()->gpgpu_clock_gated_reg_file在V100中为0。
         if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
           unsigned active_count = 0;
           for (unsigned i = 0; i < m_shader->get_config()->warp_size;
@@ -4481,38 +5137,106 @@ void opndcoll_rfu_t::dispatch_ready_cu() {
               m_shader->get_config()->warp_size);  // cu->get_active_count());
         }
       }
+      //如果能够从第p个调度器找到一个空闲准备好可以接收的收集器单元的话，就执行它的分
+      //发函数dispatch()。主要过程是，经过收集器单元收集完源操作数后，将原先暂存在收
+      //集器单元指令槽m_warp中的指令推出到m_output_register中。
       cu->dispatch();
     }
   }
 }
 
+/*
+opndcoll_rfu_t::allocate_cu函数将ID_OC流水线寄存器中的指令分配给收集器单元。
+*/
 void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
+  //端口（m_in_Ports）：包含输入流水线寄存器集合（ID_OC）和输出寄存器集合（OC_EX）。
+  //ID_OC端口中的warp_inst_t将被发布到收集器单元。此外，当收集器单元获得所有所需的源
+  //寄存器时，它将由调度单元调度到输出管道寄存器集（OC_EX）。m_in_ports中会含有多个
+  //input_port_t对象，每个对象分别对应于SP/DP/SFU/INT/MEM/TC单元（但是一个单元可能
+  //会有多个input_port_t对象，不是一一对应的），例如添加SP单元的input_port_t对象时：
+  //   for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_sp;
+  //     i++) {
+  //     in_ports.push_back(&m_pipeline_reg[ID_OC_SP]);
+  //     out_ports.push_back(&m_pipeline_reg[OC_EX_SP]);
+  //     cu_sets.push_back((unsigned)SP_CUS);
+  //     cu_sets.push_back((unsigned)GEN_CUS);
+  //     m_operand_collector.add_port(in_ports, out_ports, cu_sets);
+  //     in_ports.clear(), out_ports.clear(), cu_sets.clear();
+  //   }
+  //   void opndcoll_rfu_t::add_port(port_vector_t &input, port_vector_t &output,
+  //                                 uint_vector_t cu_sets) {
+  //     m_in_ports.push_back(input_port_t(input, output, cu_sets));
+  //   }
+  //因此，m_in_ports对象：
+  // 0-7 -> {{m_pipeline_reg[ID_OC_SP], m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[ID_OC_MEM],
+  //          m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[ID_OC_DP], m_pipeline_reg[ID_OC_INT],
+  //          m_config->m_specialized_unit[0].ID_OC_SPEC_ID, m_config->m_specialized_unit[1].ID_OC_SPEC_ID, 
+  //          m_config->m_specialized_unit[2].ID_OC_SPEC_ID, m_config->m_specialized_unit[3].ID_OC_SPEC_ID,
+  //          m_config->m_specialized_unit[4].ID_OC_SPEC_ID, m_config->m_specialized_unit[5].ID_OC_SPEC_ID,
+  //          m_config->m_specialized_unit[6].ID_OC_SPEC_ID, m_config->m_specialized_unit[7].ID_OC_SPEC_ID},
+  //         {m_pipeline_reg[OC_EX_SP], m_pipeline_reg[OC_EX_SFU], m_pipeline_reg[OC_EX_MEM],
+  //          m_pipeline_reg[OC_EX_TENSOR_CORE], m_pipeline_reg[OC_EX_DP], m_pipeline_reg[OC_EX_INT],
+  //          m_config->m_specialized_unit[0].OC_EX_SPEC_ID, m_config->m_specialized_unit[1].OC_EX_SPEC_ID, 
+  //          m_config->m_specialized_unit[2].OC_EX_SPEC_ID, m_config->m_specialized_unit[3].OC_EX_SPEC_ID,
+  //          m_config->m_specialized_unit[4].OC_EX_SPEC_ID, m_config->m_specialized_unit[5].OC_EX_SPEC_ID,
+  //          m_config->m_specialized_unit[6].OC_EX_SPEC_ID, m_config->m_specialized_unit[7].OC_EX_SPEC_ID},
+  //         GEN_CUS}
+  //   8 -> {m_pipeline_reg[ID_OC_SP], m_pipeline_reg[OC_EX_SP], {SP_CUS, GEN_CUS}}
+  //   9 -> {m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[OC_EX_SFU], {SFU_CUS, GEN_CUS}}
+  //  10 -> {m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[OC_EX_TENSOR_CORE]
+  //  11 -> {m_pipeline_reg[ID_OC_MEM], m_pipeline_reg[OC_EX_MEM], {MEM_CUS, GEN_CUS}}
+  //所以这里的inp=m_in_ports[port_num]是第port_num个input_port_t对象。
   input_port_t &inp = m_in_ports[port_num];
+  //对inp的输入端口进行循环。
   for (unsigned i = 0; i < inp.m_in.size(); i++) {
+    //遍历寄存器集合(*inp.m_in[i])是否存在一个非空寄存器已准备好。
     if ((*inp.m_in[i]).has_ready()) {
       // find a free cu
+      //遍历当前端口内的所有收集器单元，找到一个空闲的收集器单元。
       for (unsigned j = 0; j < inp.m_cu_sets.size(); j++) {
+        //m_cus是一个字典，存储了所有的收集器单元，其定义：
+        //   //id对应收集器单元的的字典。
+        //   typedef std::map<unsigned /* collector set */,
+        //                    std::vector<collector_unit_t> /*collector sets*/>
+        //       cu_sets_t;
+        //   //操作数收集器的集合。
+        //   cu_sets_t m_cus;
+        //例如，inp.m_cu_sets[j]可以是SP_CUS，那么m_cus[inp.m_cu_sets[j]]就相当于是
+        //m_cus[SP_CUS]，是一个vector，存储了SP单元的多个收集器单元。
         std::vector<collector_unit_t> &cu_set = m_cus[inp.m_cu_sets[j]];
         bool allocated = false;
+        //cuLowerBound是当前调度器可用的收集器单元的下界。
         unsigned cuLowerBound = 0;
+        //cuUpperBound是当前调度器可用的收集器单元的上界。
         unsigned cuUpperBound = cu_set.size();
+        //schd_id是发射当前指令的调度器ID。
         unsigned schd_id;
+        //在V100配置中，sub_core_model为1。
         if (sub_core_model) {
           // Sub core model only allocates on the subset of CUs assigned to the
           // scheduler that issued
           unsigned reg_id = (*inp.m_in[i]).get_ready_reg_id();
+          //获取发射当前指令的调度器ID。
           schd_id = (*inp.m_in[i]).get_schd_id(reg_id);
           assert(cu_set.size() % m_num_warp_scheds == 0 &&
                  cu_set.size() >= m_num_warp_scheds);
+          //一个调度器可用的收集器单元数目。
           unsigned cusPerSched = cu_set.size() / m_num_warp_scheds;
+          //cuLowerBound是当前调度器可用的收集器单元的下界。
           cuLowerBound = schd_id * cusPerSched;
+          //cuUpperBound是当前调度器可用的收集器单元的上界。
           cuUpperBound = cuLowerBound + cusPerSched;
           assert(0 <= cuLowerBound && cuUpperBound <= cu_set.size());
         }
+        //检查cuLowerBound-(cuUpperBound-1)范围内的收集器单元是否有空闲的收集器单元。
         for (unsigned k = cuLowerBound; k < cuUpperBound; k++) {
           if (cu_set[k].is_free()) {
+            //找到一个空闲的收集器单元，其索引为k。
             collector_unit_t *cu = &cu_set[k];
+            //当前收集器单元为空闲状态的话，cu->allocate就可以将一个新的warp指令放到
+            //这个收集器单元中。
             allocated = cu->allocate(inp.m_in[i], inp.m_out[i]);
+            //从收集器单元获取所有的源操作数，并将它们放入m_queue[bank]队列。
             m_arbiter.add_read_requests(cu);
             break;
           }
@@ -4526,9 +5250,17 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
   }
 }
 
+/*
+仲裁器检查请求，并返回不同寄存器Bank中的op_t列表，并且这些寄存器Bank不处于Write状态。
+在该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些
+寄存器Bank不处于Write状态。
+*/
 void opndcoll_rfu_t::allocate_reads() {
   // process read requests that do not have conflicts
+  //处理没有冲突的读请求。在该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不
+  //同的寄存器组中，并且这些寄存器组不处于Write状态。
   std::list<op_t> allocated = m_arbiter.allocate_reads();
+  //read_ops字典，存储第i个Bank的读操作数。
   std::map<unsigned, op_t> read_ops;
   for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end();
        r++) {
@@ -4538,15 +5270,25 @@ void opndcoll_rfu_t::allocate_reads() {
     unsigned bank =
         register_bank(reg, wid, m_num_banks, m_bank_warp_shift, sub_core_model,
                       m_num_banks_per_sched, rr.get_sid());
+    //allocate_for_read函数分配给第bank号Bank的读状态，读的操作数为op，其定义为：
+    //    void allocate_for_read(unsigned bank, const op_t &op) {
+    //      assert(bank < m_num_banks);
+    //      m_allocated_bank[bank].alloc_read(op);
+    //    }
     m_arbiter.allocate_for_read(bank, rr);
     read_ops[bank] = rr;
   }
   std::map<unsigned, op_t>::iterator r;
+  //遍历read_ops字典，存储第i个Bank的读操作数的字典，遍历所有的读操作数。
   for (r = read_ops.begin(); r != read_ops.end(); ++r) {
     op_t &op = r->second;
     unsigned cu = op.get_oc_id();
+    //op.get_operand()返回当前操作数在其指令所有的源操作数中的排序。
     unsigned operand = op.get_operand();
+    //设置释放掉m_not_ready位向量的第operand位，用来表明该条指令的第operand个源操
+    //作数已经处于就绪状态。
     m_cu[cu]->collect_operand(operand);
+    //gpgpu_clock_gated_reg_file在V100中配置为0。
     if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
       unsigned active_count = 0;
       for (unsigned i = 0; i < m_shader->get_config()->warp_size;
@@ -4561,13 +5303,21 @@ void opndcoll_rfu_t::allocate_reads() {
       }
       m_shader->incregfile_reads(active_count);
     } else {
+      //设置SM的寄存器读的个数加32。
       m_shader->incregfile_reads(
           m_shader->get_config()->warp_size);  // op.get_active_count());
     }
   }
 }
 
+/*
+返回当前收集器单元是否所有源操作数都准备好了。
+*/
 bool opndcoll_rfu_t::collector_unit_t::ready() const {
+  //经过收集器单元收集完源操作数后，指令被推出到m_output_register中。这里是该收集器单元
+  //并没有被free掉，且标志所有源操作数是否已经准备好的位图m_not_ready为空（即所有源操作
+  //数均已准备好），并且需要输出寄存器m_output_register还有空间可以推进去。m_reg_id其实
+  //是对应的调度器的ID，从m_output_register查找第m_reg_id个调度器所能够使用的槽是否可用。
   return (!m_free) && m_not_ready.none() &&
          (*m_output_register).has_free(m_sub_core_model, m_reg_id);
 }
@@ -4587,31 +5337,50 @@ void opndcoll_rfu_t::collector_unit_t::dump(
   }
 }
 
+/*
+收集器单元类的初始化。
+*/
 void opndcoll_rfu_t::collector_unit_t::init(
     unsigned n, unsigned num_banks, unsigned log2_warp_size,
     const core_config *config, opndcoll_rfu_t *rfu, bool sub_core_model,
     unsigned reg_id, unsigned banks_per_sched) {
+  //隶属于哪个操作数收集器。
   m_rfu = rfu;
+  //收集器单元的ID。
   m_cuid = n;
+  //操作数收集器的寄存器bank数。
   m_num_banks = num_banks;
   assert(m_warp == NULL);
+  //收集器单元存储了哪个warp指令源寄存器。
   m_warp = new warp_inst_t(config);
+  //m_bank_warp_shift被初始化为5。
   m_bank_warp_shift = log2_warp_size;
+  //sub_core_model模式，每个warp调度器可用的bank数量是有限的。
   m_sub_core_model = sub_core_model;
   m_reg_id = reg_id;
   m_num_banks_per_sched = banks_per_sched;
 }
 
+/*
+当前收集器单元为空闲状态的话，就可以将一个新的warp指令放到这个收集器单元中。
+*/
 bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
                                                 register_set *output_reg_set) {
   assert(m_free);
   assert(m_not_ready.none());
   m_free = false;
+  //经过收集器单元收集完源操作数后，将指令推出到m_output_register中。
   m_output_register = output_reg_set;
+  //pipeline_reg_set->get_ready()为获取一个非空寄存器，将其指令移出，并返回这条指令。
   warp_inst_t **pipeline_reg = pipeline_reg_set->get_ready();
   if ((pipeline_reg) and !((*pipeline_reg)->empty())) {
+    //获取pipeline_reg中的指令的warp ID。
     m_warp_id = (*pipeline_reg)->warp_id();
     std::vector<int> prev_regs; // remove duplicate regs within same instr
+    //实际情况下，一条PTX或者SASS指令可能有很多个源寄存器，而且这些源寄存器中可能有重复
+    //的寄存器。prev_regs就是用来存储有效的去重的源寄存器的编号。由于这里有可能多次想获
+    //取相同的寄存器的值，所以需将新的有效寄存器的值保存在prev_regs中。这里是对一个指令
+    //的所有源寄存器编号循环，规定一条指令中的源寄存器数目最大不超过MAX_REG_OPERANDS=32。
     for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
       int reg_num =
           (*pipeline_reg)
@@ -4620,29 +5389,74 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
       bool new_reg = true;
       for (auto r : prev_regs) {
         if (r == reg_num)
+          //如果发现prev_regs已经有了当前循环的寄存器编号reg_num，则说明reg_num已经存
+          //入prev_regs了，就将new_reg置为false。
           new_reg = false;
       }
       if (reg_num >= 0 && new_reg) {          // valid register
+        //一个新的寄存器出现时，将其加入到prev_regs中。
         prev_regs.push_back(reg_num);
+        //op_t（用于保留源操作数）的定义为：
+        //   op_t(collector_unit_t *cu, unsigned op, 
+        //        unsigned reg, unsigned num_banks,
+        //        unsigned bank_warp_shift, bool sub_core_model,
+        //        unsigned banks_per_sched, unsigned sched_id) {
+        //     m_valid = true;
+        //     m_warp = NULL;
+        //     m_cu = cu;
+        //     m_operand = op;
+        //     m_register = reg;
+        //     m_shced_id = sched_id;
+        //     m_bank = register_bank(reg, cu->get_warp_id(), num_banks, 
+        //                            bank_warp_shift, sub_core_model, 
+        //                            banks_per_sched, sched_id);
+        //   }
+        //register_bank函数就是用来计算regnum所在的bank数。
+        
+        //m_src_op是一个op_t类型的向量，用来存储一条指令的所有源操作数，m_src_op[0]存
+        //储第0个源操作数，m_src_op[1]存储第1个源操作数，...，m_src_op[31]存储第31个
+        //源操作数。
         m_src_op[op] = op_t(this, op, reg_num, m_num_banks, m_bank_warp_shift,
                             m_sub_core_model, m_num_banks_per_sched,
                             (*pipeline_reg)->get_schd_id());
+        //m_not_ready的定义为：
+        //    std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
+        //m_not_ready是一个位向量，用来存储一条指令的所有源操作数是否处于非就绪状态。这
+        //里设置第op个源操作数为非就绪状态。
         m_not_ready.set(op);
       } else
+        //如果是一个旧的寄存器的话，就将其置空。
         m_src_op[op] = op_t();
     }
     // move_warp(m_warp,*pipeline_reg);
+    //m_warp的定义为：
+    //    warp_inst_t *m_warp;
+    //这里是将pipeline_reg中的指令移出，并将其放入m_warp中，m_warp是隶属于当前收集器单
+    //元的一条指令槽：
+    //    m_warp = new warp_inst_t(config);
+    //这里是将这条指令从流水线寄存器中移出，放到了收集器单元中暂存，即该条指令就由当前寄
+    //存器单元来帮助它收集源操作数。
     pipeline_reg_set->move_out_to(m_warp);
     return true;
   }
   return false;
 }
 
+/*
+分发。经过收集器单元收集完源操作数后，将原先暂存在收集器单元指令槽m_warp中的指令推出到
+m_output_register中。
+*/
 void opndcoll_rfu_t::collector_unit_t::dispatch() {
+  //确保未就绪的源操作数已经没有了，便可进一步将指令推出到m_output_register中。
   assert(m_not_ready.none());
+  //经过收集器单元收集完源操作数后，将原先暂存在收集器单元指令槽m_warp中的指令推出到
+  //m_output_register中。
   m_output_register->move_in(m_sub_core_model, m_reg_id, m_warp);
+  //重置当前收集器单元为空闲状态。
   m_free = true;
+  //????
   m_output_register = NULL;
+  //重置当前收集器单元的源操作数为空。
   for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) m_src_op[i].reset();
 }
 
@@ -4891,11 +5705,12 @@ simt_core_cluster::icnt_cycle()方法将内存请求从互连网络推入simt核
 Core共享。
 */
 void simt_core_cluster::icnt_cycle() {
-  //如果响应FIFO非空。
+  //如果响应FIFO非空。这里的m_response_fifo是指SIMT Core集群的响应FIFO。
   if (!m_response_fifo.empty()) {
     //从响应FIFO头部推出一个数据包 mf。m_response_fifo被定义为：
     //    std::list<mem_fetch *> m_response_fifo;
-    //mem_fetch定义了一个模拟内存请求的通信结构。更像是一个内存请求的行为。
+    //mem_fetch定义了一个模拟内存请求的通信结构。更像是一个内存请求的行为。这里的m_response_fifo是
+    //指SIMT Core集群的响应FIFO。
     mem_fetch *mf = m_response_fifo.front();
     //mf->get_sid()获取内存访问请求源的SIMT Core的ID。m_config是SIMT Core集群中的Shader Core的配
     //置。m_config->sid_to_cid(sid)是依据SM的ID，获取SIMT Core集群的ID。即cid为SIMT Core集群的ID。
@@ -4922,34 +5737,50 @@ void simt_core_cluster::icnt_cycle() {
       //第二维代表SIMT Core ID。fetch_unit_response_buffer_full()返回预取单元响应buffer是否已满。
       //这里这个函数一直非满，即下面的循环始终执行。
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
-        //对指令预取的响应FIFO弹出一个数据包。
+        //对指令预取的响应FIFO弹出一个数据包。这里的m_response_fifo是指SIMT Core集群的响应FIFO。
         m_response_fifo.pop_front();
         //m_core[cid]指向的SIMT Core集群接收这个预取的指令数据包，把mf放到cid标识的SIMT Core集群
-        //的L1 I-Cache。
+        //的L1 I-Cache。请注意，这里m_core为SIMT Core集群定义的所有SM，一个二维shader_core_ctx矩
+        //阵，第一维代表集群ID，第二维代表SIMT Core ID，其定义为：
+        //    shader_core_ctx **m_core;
+        //在TITAN V的配置中，一个SIMT Core集群里会有两个SM，但是这两个SM其实与互连网络共享一个公共
+        //端口，且从这段代码看起来，这两个SM共用了一套指令缓存和LD/ST单元，不知道对不对，但是我们基
+        //本上用到的都是单SM的配置，所以这里不必过多纠结。
         m_core[cid]->accept_fetch_response(mf);
       }
     } else {
       //如果mf->get_access_type() ≠ 从指令缓存读，则是数据提取响应。
       // data response.
       //ldst_unit_response_buffer_full()返回LDST单元响应buffer是否已满。
+      //返回LDST单元响应buffer是否已满。LD/ST单元的响应FIFO中的数据包数 >= GPU配置的响应队列中的最
+      //大响应包数。这里需要注意的是，LD/ST单元也有一个m_response_fifo，且m_response_fifo.size()
+      //获取的是该fifo已经存储的mf数目，m_config->ldst_unit_response_queue_size则是配置的该fifo的
+      //最大容量，一旦m_response_fifo.size()等于配置的最大容量，就会返回True，表示该fifo已满.
       if (!m_core[cid]->ldst_unit_response_buffer_full()) {
-        //对数据预取的响应FIFO弹出一个数据包。
+        //对数据预取的响应FIFO弹出一个数据包。这里的m_response_fifo是指SIMT Core集群的响应FIFO。
         m_response_fifo.pop_front();
         //统计Memory Latency Statistics.
         m_memory_stats->memlatstat_read_done(mf);
-        //m_core[cid]指向的SIMT Core集群接收这个预取的data数据包。
+        //m_core[cid]指向的SIMT Core集群接收这个预取的data数据包。请注意，这里m_core为SIMT Core集
+        //群定义的所有SM，一个二维shader_core_ctx矩阵，第一维代表集群ID，第二维代表SIMT Core ID，
+        //其定义为：
+        //    shader_core_ctx **m_core;
+        //在TITAN V的配置中，一个SIMT Core集群里会有两个SM，但是这两个SM其实与互连网络共享一个公共
+        //端口，且从这段代码看起来，这两个SM共用了一套指令缓存和LD/ST单元，不知道对不对，但是我们基
+        //本上用到的都是单SM的配置，所以这里不必过多纠结。
         m_core[cid]->accept_ldst_unit_response(mf);
       }
     }
   }
-  //m_config->n_simt_ejection_buffer_size是弹出缓冲区中的数据包数。如果响应FIFO大小 < 弹出缓冲区中
-  //的数据包数，则弹出缓冲区可以继续向SIMT Core集群的响应FIFO里弹出下一个数据包。弹出缓冲区指的是，[互
-  //连网络->弹出缓冲区->SIMT Core集群]的中间节点。这里m_response_fifo.size()是指m_response_fifo中的数
-  //据包数量，当m_response_fifo为空时，size=0。
+  //m_config->n_simt_ejection_buffer_size是弹出缓冲区中的数据包数。其实可以理解为这就是SIMT Core集群
+  //的响应FIFO的最大容量。如果响应FIFO大小 < 弹出缓冲区中的数据包数，则弹出缓冲区可以继续向SIMT Core集群
+  //的响应FIFO里弹出下一个数据包。弹出缓冲区指的是，[互连网络->弹出缓冲区->SIMT Core集群]的中间节点。这
+  //里m_response_fifo.size()是指m_response_fifo中的数据包数量，当m_response_fifo为空时，size=0。
   if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
-    //这里mem_fetch *mf指的是弹出缓冲区继续向SIMT Core集群的响应FIFO里弹出的下一个数据包。
+    //这里mem_fetch *mf指的是互连网络继续向SIMT Core集群的响应FIFO里弹出的下一个数据包。
     mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    //如果没弹出来，说明弹出缓冲区为空，互连网络没有新的数据包要向SIMT Core集群传输。
+    //如果没弹出来，说明互连网络的弹出缓冲区（由互连网络->SIMT Core集群）为空，互连网络没有新的数据包要向
+    //SIMT Core集群传输。
     if (!mf) return;
     assert(mf->get_tpc() == m_cluster_id);
     assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
@@ -4966,7 +5797,7 @@ void simt_core_cluster::icnt_cycle() {
     mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     // m_memory_stats->memlatstat_read_done(mf,m_shader_config->max_warps_per_shader);
-    //响应FIFO将数据包mf加入到FIFO底部，先入先出顺序。
+    //SIMT Core集群的响应FIFO将数据包mf加入到FIFO底部，先入先出顺序。
     m_response_fifo.push_back(mf);
     m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
   }
