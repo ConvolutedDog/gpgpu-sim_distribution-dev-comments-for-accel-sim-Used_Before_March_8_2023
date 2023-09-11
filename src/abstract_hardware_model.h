@@ -1067,6 +1067,9 @@ class mem_access_t {
 
 class mem_fetch;
 
+/*
+对mem访存的接口。
+*/
 class mem_fetch_interface {
  public:
   virtual bool full(unsigned size, bool write) const = 0;
@@ -1570,6 +1573,8 @@ register that can hold multiple instructions.
 class register_set {
  public:
   //构造函数，用于初始化寄存器集合，寄存器集合中有num个寄存器，每个寄存器含有一条指令。
+  //寄存器集合中的所有寄存器用一个向量regs保存：
+  //    std::vector<warp_inst_t *> regs;
   register_set(unsigned num, const char *name) {
     for (unsigned i = 0; i < num; i++) {
       regs.push_back(new warp_inst_t());
@@ -1592,12 +1597,14 @@ class register_set {
   bool has_free(bool sub_core_model, unsigned reg_id) {
     // in subcore model, each sched has a one specific reg to use (based on
     // sched id)
+    //在subcore模式下，每个warp调度器在寄存器集合中有一个具体的寄存器可供使用，这个寄
+    //存器由调度器的m_id索引。
     if (!sub_core_model) return has_free();
 
     assert(reg_id < regs.size());
     return regs[reg_id]->empty();
   }
-  //获取一个非空寄存器的id。
+  //遍历是否存在一个非空寄存器已准备好。
   bool has_ready() {
     for (unsigned i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
@@ -1606,7 +1613,8 @@ class register_set {
     }
     return false;
   }
-  //给定一个寄存器id，判断该寄存器是否非空。
+  //给定一个寄存器id，判断该寄存器是否非空。在subcore模式下，每个warp调度器在寄存器集
+  //合中有一个具体的寄存器可供使用，这个寄存器由调度器的m_id索引。
   bool has_ready(bool sub_core_model, unsigned reg_id) {
     if (!sub_core_model) return has_ready();
     assert(reg_id < regs.size());
@@ -1644,7 +1652,8 @@ class register_set {
   // void copy_in( warp_inst_t* src ){
   //   src->copy_contents_to(*get_free());
   //}
-  //获取一个空寄存器，并将一条指令存入。
+  //获取一个空寄存器，并将一条指令存入。在subcore模式下，每个warp调度器在寄存器集合中
+  //有一个具体的寄存器可供使用，这个寄存器由调度器的m_id索引。
   void move_in(bool sub_core_model, unsigned reg_id, warp_inst_t *&src) {
     warp_inst_t **free;
     if (!sub_core_model) {
@@ -1660,7 +1669,9 @@ class register_set {
     warp_inst_t **ready = get_ready();
     move_warp(dest, *ready);
   }
-  //依据寄存器编号reg_id，获取一个非空寄存器，并将其指令移出到dest。
+  //依据寄存器编号reg_id，获取一个非空寄存器，并将其指令移出到dest。在subcore模式下，
+  //每个warp调度器在寄存器集合中有一个具体的寄存器可供使用，这个寄存器由调度器的m_id索
+  //引。
   void move_out_to(bool sub_core_model, unsigned reg_id, warp_inst_t *&dest) {
     if (!sub_core_model) {
       return move_out_to(dest);
@@ -1684,7 +1695,8 @@ class register_set {
     }
     return ready;
   }
-  //获取一个非空寄存器，将其指令移出，并返回这条指令。
+  //获取一个非空寄存器，将其指令移出，并返回这条指令。在subcore模式下，每个warp调度器
+  //在寄存器集合中有一个具体的寄存器可供使用，这个寄存器由调度器的m_id索引。
   warp_inst_t **get_ready(bool sub_core_model, unsigned reg_id) {
     if (!sub_core_model) return get_ready();
     warp_inst_t **ready;
@@ -1712,7 +1724,8 @@ class register_set {
     assert(0 && "No free registers found");
     return NULL;
   }
-  //遍历所有寄存器，获取一个空寄存器的地址。
+  //遍历所有寄存器，获取一个空寄存器的地址。在subcore模式下，每个warp调度器在寄存器集
+  //合中有一个具体的寄存器可供使用，这个寄存器由调度器的m_id索引。
   warp_inst_t **get_free(bool sub_core_model, unsigned reg_id) {
     // in subcore model, each sched has a one specific reg to use (based on
     // sched id)
