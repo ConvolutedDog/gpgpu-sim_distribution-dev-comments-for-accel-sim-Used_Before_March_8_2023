@@ -302,6 +302,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
   //}
 }
 
+/*
+将内存请求从L2->dram队列移动到DRAM Channel，DRAM Channel到dram->L2队列，并循环片外GDDR3 DRAM内存。
+*/
 void memory_partition_unit::dram_cycle() {
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
@@ -416,6 +419,9 @@ void memory_partition_unit::print(FILE *fp) const {
   m_dram->print(fp);
 }
 
+/*
+memory_sub_partition构造函数。
+*/
 memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
                                            const memory_config *config,
                                            class memory_stats_t *stats,
@@ -426,6 +432,12 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
 
+  //gpgpu_n_mem为配置中的内存控制器（DRAM Channel）数量，定义为：
+  //  option_parser_register(
+  //      opp, "-gpgpu_n_mem", OPT_UINT32, &m_n_mem,
+  //      "number of memory modules (e.g. memory controllers) in gpu", "8");
+  //在V100配置中，有32个内存控制器（DRAM Channel）。m_n_mem_sub_partition的定义为：
+  //    m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel;
   assert(m_id < m_config->m_n_mem_sub_partition);
 
   char L2c_name[32];
@@ -466,10 +478,22 @@ memory_sub_partition::~memory_sub_partition() {
   delete m_L2interface;
 }
 
+/*
+对二级缓存Bank进行计时，并将请求移入或移出二级缓存。下面将描述memory_partition_unit::cache_cycle()的
+内部结构。
+*/
 void memory_sub_partition::cache_cycle(unsigned cycle) {
   // L2 fill responses
+  //在配置文件中，L2 Cache并未禁用。
   if (!m_config->m_L2_config.disabled()) {
+    //L2 Cache内部的MSHR维护了一个就绪内存访问的列表m_current_response，m_L2cache->access_ready()返
+    //回的是m_current_response非空，即如果m_current_response非空，说明L2 Cache的MSHR中有就绪的内存访
+    //问。m_L2_icnt_queue这里需要看手册中的第五章中内存分区的详细细节图，memory_sub_partition向互连网
+    //络推出数据包的接口就是L2_icnt_queue->ICNT，因此这里是判断内存子分区中的m_L2_icnt_queue队列是否非
+    //满，如果非满，说明可以向互连网络推出数据包。m_current_response仅存储了就绪内存访问的地址。
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
+      //m_L2cache->next_access()调用MSHR的next_access()返回一个就绪的内存访问，即m_current_response
+      //中的顶部地址标志的数据包（m_current_response仅存储了就绪内存访问的地址）。
       mem_fetch *mf = m_L2cache->next_access();
       if (mf->get_access_type() !=
           L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
@@ -479,6 +503,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_L2_icnt_queue->push(mf);
       } else {
+        //如果mf是L2_WR_ALLOC_R类型，就将mf的状态设置为IN_PARTITION_L2_FILL_QUEUE，将mf填充进L2
+        //FETCH_ON_WRITE 是一种写分配（write allocate）策略中的一个选项。写分配是指在写入操作发生时，如
+        //果目标地址不在缓存中，会将该地址的数据从内存中读取到缓存中，然后再进行写入操作。FETCH_ON_WRITE 
+        //是指在写入操作发生时才执行读取操作，也就是在进行写入之前先从内存中获取数据。这个策略的优点是能够
+        //减少写操作所需要的内存访问次数，从而降低延迟。当写入操作频繁时，使用 FETCH_ON_WRITE 策略可以有
+        //效地提高缓存的性能。????
         if (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE) {
           mem_fetch *original_wr_mf = mf->get_original_wr_mf();
           assert(original_wr_mf);
@@ -495,14 +525,18 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
   }
 
   // DRAM to L2 (texture) and icnt (not texture)
+  //如果m_dram_L2_queue非空，就获取m_dram_L2_queue的顶部数据包，后续填入L2 Cache。
   if (!m_dram_L2_queue->empty()) {
+    //获取m_dram_L2_queue的顶部数据包。
     mem_fetch *mf = m_dram_L2_queue->top();
     if (!m_config->m_L2_config.disabled() && m_L2cache->waiting_for_fill(mf)) {
       if (m_L2cache->fill_port_free()) {
         mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        //将m_dram_L2_queue的顶部数据包填充进L2 Cache。
         m_L2cache->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                                 m_memcpy_cycle_offset);
+        //将m_dram_L2_queue的顶部数据包弹出。
         m_dram_L2_queue->pop();
       }
     } else if (!m_L2_icnt_queue->full()) {
@@ -602,6 +636,11 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
 
 bool memory_sub_partition::full() const { return m_icnt_L2_queue->full(); }
 
+/*
+这里需要看手册中的第五章中内存分区的详细细节图，memory_sub_partition向互连网络推出数据包的接
+口就是L2_icnt_queue->ICNT，因此这里是判断内存子分区中的m_L2_icnt_queue队列是否可以放下size
+大小的数据，可以放下返回False，放不下返回True。
+*/
 bool memory_sub_partition::full(unsigned size) const {
   return m_icnt_L2_queue->is_avilable_size(size);
 }
@@ -718,27 +757,63 @@ unsigned memory_sub_partition::invalidateL2() {
 
 bool memory_sub_partition::busy() const { return !m_request_tracker.empty(); }
 
+/*
+cache_config的第一个字母代表cache的数据请求单位，如果是"N"则代表Normal，如果是"S"则代表Sector。
+Normal模式其实代表的是耳熟能详的Set-Associative组成结构，而Sector模式代表的是cache的另外的一种
+Sector Buffer组成结构。在V100的配置文件中：
+    -gpgpu_cache:dl1  S:4:128:64,L:T:m:L:L,A:512:8,16:0,32
+    -gpgpu_cache:dl2  S:32:128:24,L:B:m:L:P,A:192:4,32:0,32
+    -gpgpu_cache:il1  N:64:128:16,L:R:f:N:L,S:2:48,4
+因此L1 Data Cache和L2 Data Cache都是Sector模式，而L1 Instruction Cache是Normal模式。简单介绍
+Sector Buffer组成结构：假定在一个微架构中，Cache大小为16KB，使用Sector Buffer方式时，这个16KB
+被分解为16个1KB大小的Sector，CPU可以同时查找这16个Sector。当访问的数据不在这16个Sector中命中时，
+将首先进行Sector淘汰操作，在获得一个新的Sector后，将即将需要访问的64B数据填入这个Sector。如果访
+问的数据命中了某个Sector，但是数据并不包含在Sector时，将相应的数据继续读到这个Sector中。采用这种
+Sector Buffer方法时，Cache的划分粒度较为粗略，对程序的局部性的要求过高。Cache的整体命中率不如采
+用Set-Associative的组成方式。
+
+这里如果L2 Cache是Sector Buffer模式，则将数据请求m_req拆分为多个Sector请求。
+*/
 std::vector<mem_fetch *>
 memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
   std::vector<mem_fetch *> result;
+  //获取数据请求mf的byte mask。这里的byte mask是用于标记一次访存操作中的扇区掩码，4个扇区，每个
+  //扇区32个字节数据，因此sector_mask是一个标记128 byte数据的掩码，共128位bitset：
+  //    typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
+  //    const unsigned SECTOR_CHUNCK_SIZE = 4;  // four sectors
+  //    const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
   mem_access_sector_mask_t sector_mask = mf->get_access_sector_mask();
   if (mf->get_data_size() == SECTOR_SIZE &&
       mf->get_access_sector_mask().count() == 1) {
+    //如果数据请求的大小正好是一个SECTOR，且只有一个SECTOR被访问，则不需要拆分，直接将该请求压入
+    //result。mf->get_access_sector_mask().count()=1时，说明只有其中一位为1，即只有一个字节被
+    //访问，因此这一个字节一定位于单个扇区中。
     result.push_back(mf);
   } else if (mf->get_data_size() == MAX_MEMORY_ACCESS_SIZE) {
     // break down every sector
+    //MAX_MEMORY_ACCESS_SIZE定义为：const unsigned MAX_MEMORY_ACCESS_SIZE = 128。这里的mask
+    //也是用于标记一次访存操作中的数据字节掩码，MAX_MEMORY_ACCESS_SIZE设置为128，即每次访存最大
+    //数据128字节，共128位bitset。mem_access_byte_mask_t的定义为：
+    //    typedef std::bitset<MAX_MEMORY_ACCESS_SIZE> mem_access_byte_mask_t;
     mem_access_byte_mask_t mask;
+    //对于一个MAX_MEMORY_ACCESS_SIZE=128字节大小的请求来说，总共分为4个SECTOR_CHUNCK，且划分的
+    //SECTOR的大小为SECTOR_SIZE=32。因此这里对4个SECTOR_CHUNCK循环。目的是将一个128字节的大请求
+    //划分为SECTOR_CHUNCK_SIZE = 4个独立的请求。
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
+      //k代表的是第i个SECTOR_CHUNCK中的字节编号范围，第0个CHUNCK中k的范围是[0,32)，第1个CHUNCK
+      //中k的范围是[32,64)，第2个CHUNCK中k的范围是[64,96)，第3个CHUNCK中k的范围是[96,128)。
       for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
+        //第i个SECTOR_CHUNCK中的字节mask设置为k的范围对应位。
         mask.set(k);
       }
+      //将第i个SECTOR_CHUNCK中的字节mask与mf的字节mask进行与操作，得到第i个SECTOR_CHUNCK的请求。
       mem_fetch *n_mf = m_mf_allocator->alloc(
           mf->get_addr() + SECTOR_SIZE * i, mf->get_access_type(),
           mf->get_access_warp_mask(), mf->get_access_byte_mask() & mask,
           std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE, mf->is_write(),
           m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf->get_wid(),
           mf->get_sid(), mf->get_tpc(), mf);
-
+      //将第i个SECTOR_CHUNCK的请求压入result。
       result.push_back(n_mf);
     }
     // This is for constant cache
@@ -857,15 +932,41 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
 //  return result;
 //}
 
+/*
+将数据读请求m_req从互连网络推入到内存子分区来进行后续取数据处理。
+*/
 void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
   if (m_req) {
     m_stats->memlatstat_icnt2mem_pop(m_req);
     std::vector<mem_fetch *> reqs;
+    //cache_config的第一个字母代表cache的数据请求单位，如果是"N"则代表Normal，如果是"S"则
+    //代表Sector。Normal模式其实代表的是耳熟能详的Set-Associative组成结构，而Sector模式代
+    //表的是cache的另一种Sector Buffer组成结构。在V100的配置文件中：
+    //    -gpgpu_cache:dl1  S:4:128:64,L:T:m:L:L,A:512:8,16:0,32
+    //    -gpgpu_cache:dl2  S:32:128:24,L:B:m:L:P,A:192:4,32:0,32
+    //    -gpgpu_cache:il1  N:64:128:16,L:R:f:N:L,S:2:48,4
+    //因此L1 Data Cache和L2 Data Cache都是Sector模式，而L1 Instruction Cache是Normal模式。
+    //简单介绍Sector Buffer组成结构：假定在一个微架构中，Cache大小为16KB，使用Sector Buffer
+    //方式时，这个16KB被分解为16个1KB大小的Sector，CPU可以同时查找这16个Sector。当访问的数据
+    //不在这16个Sector中命中时，将首先进行Sector淘汰操作，在获得一个新的Sector后，将即将需要
+    //访问的64B数据填入这个Sector。如果访问的数据命中了某个Sector，但是数据并不包含在Sector时，
+    //将相应的数据继续读到这个Sector中。采用这种方法时，Cache的划分粒度较为粗略，对程序的局部
+    //性的要求过高。Cache的整体命中率不如采用Set-Associative的组成方式。
+
+    //这里如果L2 Cache是Sector Buffer模式，则将数据请求m_req拆分为多个Sector请求。
     if (m_config->m_L2_config.m_cache_type == SECTOR)
       reqs = breakdown_request_to_sector_requests(m_req);
     else
       reqs.push_back(m_req);
 
+    //对于每个请求，将其压入m_icnt_L2_queue队列（针对纹理访问）或 m_rop（Raster Operations 
+    //Pipeline，ROP队列，针对非纹理操作）。内存请求数据包通过ICNT->L2 queue从互连网络进入内存
+    //分区。如GT200微基准测试研究所观察到的，非纹理访问通过光栅操作流水线（Raster Operations 
+    //Pipeline，ROP）队列进行，以模拟460 L2时钟周期的最小流水线延迟。L2 Cache Bank在每个L2时
+    //钟周期从ICNT->L2 queue弹出一个请求进行服务。L2生成的芯片外DRAM的任何内存请求都被推入L2->
+    //DRAM queue。如果L2 Cache被禁用，数据包将从ICNT->L2 queue弹出，并直接推入L2->DRAM queue，
+    //仍然以L2时钟频率。从片外DRAM返回的填充请求从DRAM->L2 queue弹出，并由L2 Cache Bank消耗。
+    //从L2到SIMT Core的读响应通过L2->ICNT queue推送。
     for (unsigned i = 0; i < reqs.size(); ++i) {
       mem_fetch *req = reqs[i];
       m_request_tracker.insert(req);
@@ -897,6 +998,22 @@ mem_fetch *memory_sub_partition::pop() {
   return mf;
 }
 
+/*
+从所有存储子分区向互连网络弹出顶部数据包mf。gpgpu_n_mem为配置中的内存控制器（DRAM Channel）
+数量，定义为：
+ option_parser_register(opp, "-gpgpu_n_mem", OPT_UINT32, &m_n_mem,
+                        "number of memory modules (e.g. memory controllers) in gpu",
+                        "8");
+在V100配置中，有32个内存控制器（DRAM Channel），同时每个内存控制器分为了两个子分区，因此，
+m_n_sub_partition_per_memory_channel为2，定义为：
+ option_parser_register(opp, "-gpgpu_n_sub_partition_per_mchannel", OPT_UINT32,
+                        &m_n_sub_partition_per_memory_channel,
+                        "number of memory subpartition in each memory module",
+                        "1");
+而m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel，代表全部内存子
+分区的总数。这里需要看手册中的内存分区图，memory_sub_partition向互连网络推出数据包的接口就是
+L2_icnt_queue->ICNT，因此这里是将内存子分区中的m_L2_icnt_queue队列顶部的数据包弹出并返回。
+*/
 mem_fetch *memory_sub_partition::top() {
   mem_fetch *mf = m_L2_icnt_queue->top();
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
