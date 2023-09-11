@@ -577,6 +577,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_reg_bank_use_warp_id", OPT_BOOL, &gpgpu_reg_bank_use_warp_id,
       "Use warp ID in mapping registers to banks (default = off)", "0");
+  //在subcore模式下，每个warp调度器在寄存器集合中有一个具体的寄存器可供使用，这个寄
+  //存器由调度器的m_id索引。
   option_parser_register(opp, "-gpgpu_sub_core_model", OPT_BOOL,
                          &sub_core_model,
                          "Sub Core Volta/Pascal model (default = off)", "0");
@@ -732,6 +734,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");
+  //寄存器文件的端口数。在V100配置文件里gpgpu_reg_file_port_throughput被设置为2。
   option_parser_register(opp, "-gpgpu_reg_file_port_throughput", OPT_INT32,
                          &reg_file_port_throughput,
                          "the number ports of the register file", "1");
@@ -2352,6 +2355,15 @@ void gpgpu_sim::cycle() {
       //如果SIMT Core无法接受FIFO头部的数据包，则响应FIFO将停止。为了在LDST单元上生成内存请求，每个
       //SIMT Core都有自己的注入端口接入互连网络。但是，注入端口缓冲区由SIMT Core集群所有SIMT Core共
       //享。
+      //icnt_cycle()实现的主要步骤如下：
+      //首先，我们要判断以下SIMT Core集群的m_response_fifo是否为空，如果不为空，则证明这一拍内，必须
+      //先将SIMT Core集群的m_response_fifo中的数据包mf推入到SIMT Core的L1指令缓存m_L1I或者LD/ST单
+      //元中（实际上，代码中考虑了例如TITAN V配置的单个SIMT Core集群内有多个SM的情况，但是我们这里用
+      //到的V100配置每个SIMT Core集群内只有单个SM，所以这里可以认为SIMT Core集群就是单个SM）。其次，
+      //判断以下做完上述步骤的SIMT Core集群的m_response_fifo是否还有空间接收新的来自互连网络的数据包，
+      //如果不为慢，则证明这一拍内，必须接收来自互连网络的数据包。需注意的是上述的先后顺序，实际硬件执
+      //行的时候，这两个步骤同步进行，这里我们必须先将SIMT Core集群的m_response_fifo中的数据包mf推入
+      //SIMT Core，然后再尝试接收新的来自互连网络的数据包。
       m_cluster[i]->icnt_cycle();
   }
   unsigned partiton_replys_in_parallel_per_cycle = 0;
@@ -2359,15 +2371,29 @@ void gpgpu_sim::cycle() {
   //更新ICNT时钟域，向前推进一拍。
   if (clock_mask & ICNT) {
     // pop from memory controller to interconnect
-    //从存储控制器向互连网络弹出。
+    //从存储控制器向互连网络弹出。gpgpu_n_mem为配置中的内存控制器（DRAM Channel）数量，定义为：
+    //  option_parser_register(opp, "-gpgpu_n_mem", OPT_UINT32, &m_n_mem,
+    //                         "number of memory modules (e.g. memory controllers) in gpu",
+    //                         "8");
+    //在V100配置中，有32个内存控制器（DRAM Channel），同时每个内存控制器分为了两个子分区，因此，
+    //m_n_sub_partition_per_memory_channel为2，定义为：
+    //  option_parser_register(opp, "-gpgpu_n_sub_partition_per_mchannel", OPT_UINT32,
+    //                         &m_n_sub_partition_per_memory_channel,
+    //                         "number of memory subpartition in each memory module",
+    //                         "1");
+    //而m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel，代表全部内存子
+    //分区的总数。
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+      //这里需要看手册中的第五章中内存分区的详细细节图，memory_sub_partition向互连网络推出数据包的接
+      //口就是L2_icnt_queue->ICNT，因此这里是将内存子分区中的m_L2_icnt_queue队列顶部的数据包弹出并
+      //返回。这里是对所有内存子分区循环，将所有内存子分区的m_L2_icnt_queue队列顶部的数据包弹出。
       mem_fetch *mf = m_memory_sub_partition[i]->top();
       if (mf) {
         unsigned response_size =
             mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
-        //在从存储控制器向互连网络弹出时，如果互连网络中有空闲的缓冲区，则将内存请求推入互连网络。
-        //但是一旦互联网络中的缓冲区被占满，就会停止推送。由于互连网络缓冲区的大小限制造成的停顿
-        //时钟周期数由gpu_stall_icnt2sh计数保存下来。
+        //在从内存子分区向互连网络弹出时，如果互连网络中有空闲的缓冲区，则将内存请求推入互连网络。但是
+        //一旦互联网络中的缓冲区被占满，就会停止推送。由于互连网络缓冲区的大小限制造成的停顿时钟周期数
+        //由gpu_stall_icnt2sh计数保存下来。
         if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
           // if (!mf->get_is_write())
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
@@ -2380,6 +2406,7 @@ void gpgpu_sim::cycle() {
           gpu_stall_icnt2sh++;
         }
       } else {
+        //如果内存子分区的m_L2_icnt_queue队列顶部的数据包失效，则也将这个失效的数据包也弹出。
         m_memory_sub_partition[i]->pop();
       }
     }
@@ -2387,6 +2414,8 @@ void gpgpu_sim::cycle() {
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
   if (clock_mask & DRAM) {
+    //对每个DRAM通道循环，调用memory_partition_unit::dram_cycle()方法，将内存请求从L2->dram队列移
+    //动到DRAM Channel，DRAM Channel到dram->L2队列，并循环片外GDDR3 DRAM内存。
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
         m_memory_partition_unit[i]->simple_dram_model_cycle();
@@ -2409,8 +2438,22 @@ void gpgpu_sim::cycle() {
 
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
+
+  //更新L2时钟域。
   if (clock_mask & L2) {
     m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
+    //gpgpu_n_mem为配置中的内存控制器（DRAM Channel）数量，定义为：
+    //  option_parser_register(opp, "-gpgpu_n_mem", OPT_UINT32, &m_n_mem,
+    //                         "number of memory modules (e.g. memory controllers) in gpu",
+    //                         "8");
+    //在V100配置中，有32个内存控制器（DRAM Channel），同时每个内存控制器分为了两个子分区，因此，
+    //m_n_sub_partition_per_memory_channel为2，定义为：
+    //  option_parser_register(opp, "-gpgpu_n_sub_partition_per_mchannel", OPT_UINT32,
+    //                         &m_n_sub_partition_per_memory_channel,
+    //                         "number of memory subpartition in each memory module",
+    //                         "1");
+    //而m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel，代表全部内存子
+    //分区的总数。这里对所有内存分区循环。
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       // move memory request from interconnect into memory partition (if not
       // backed up) Note:This needs to be called in DRAM clock domain if there
@@ -2425,10 +2468,20 @@ void gpgpu_sim::cycle() {
       //    }
       //即请求由icnt发送至L2_queue时，m_icnt_L2_queue没有SECTOR_CHUNCK_SIZE大小的空间
       //可以保存请求信息，因此互连网络的拥塞造成DRAM的停滞。
+      
+      //这里需要看手册中的第五章中内存分区的详细细节图，memory_sub_partition向互连网络推出数据包的接
+      //口就是L2_icnt_queue->ICNT，因此这里是判断内存子分区中的m_L2_icnt_queue队列是否可以放下size
+      //大小的数据，可以放下返回False，放不下返回True。SECTOR_CHUNCK_SIZE=4。如果m_L2_icnt_queue队
+      //列放不下SECTOR_CHUNCK_SIZE=4大小的数据，则代表由于[L2缓存的拥塞->互连网络的拥塞]造成DRAM的
+      //停滞，由gpu_stall_dramfull记录停滞的次数。
       if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
         gpu_stall_dramfull++;
       } else {
+        //如果m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)返回False，代表m_L2_icnt_queue
+        //队列放得下SECTOR_CHUNCK_SIZE=4大小的数据，因此可以将数据读请求mf从互连网络推入到内存子分区
+        //来进行取数据处理。
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+        //将数据读请求m_req从互连网络推入到内存子分区来进行后续取数据处理。
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
         //如果mf不为空，则说明有请求被推入L2_queue，因此当前存储分区有请求产生，而且有
         //partiton_reqs_in_parallel_per_cycle表示当前时钟周期内所有存储分区的并行请求
@@ -2436,6 +2489,7 @@ void gpgpu_sim::cycle() {
         //求被推入L2_queue的总个数加1。
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
+      //对二级缓存Bank进行节拍推进，并将请求移入或移出二级缓存。????
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
       m_memory_sub_partition[i]->accumulate_L2cache_stats(
           m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
@@ -2461,12 +2515,27 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       //如果get_not_completed()大于1，代表这个SIMT Core尚未完成；如果get_more_cta_left()为1，
       //代表这个SIMT Core还有剩余的CTA需要取执行。m_cluster[i]->get_not_completed()返回第i个
-      //SIMT Core集群中尚未完成的线程个数。
+      //SIMT Core集群中尚未完成的线程个数。get_more_cta_left()用于检查当前是否还有更多的CTA（
+      //Compute Thread Array）需要执行。它检查当前活跃的CTA数量，并返回是否有更多CTA需要执行。
+      //如果已达到GPU模拟限制最大的CTA数（由hit_max_cta_count()判断），则没有剩余的CTA，返回
+      //False；如果某个m_running_kernels向量里的kernel非空，且kernel->no_more_ctas_to_run()
+      //为false即kernel自己还可有多余CTA执行，则返回True。no_more_ctas_to_run()函数指示当前没
+      //有更多的CTA（Compute Thread Array）需要执行。
+      //这里可以将m_cluster[i]的执行状态分为几类：
+      //    1. shader_core_ctx::init_warps中初始化warp时，会设置m_not_completed+=n_active，
+      //       因此这里get_not_completed()返回m_not_completed的值实际上是返回的是已经初始化的
+      //       warp（CTA）中尚未完成的线程数。对于尚未初始化的warp（CTA），是没有记录的。
+      //    2. 因此第二部需要判断是否有尚未初始化的warp（CTA）需要后续执行，只有1和2两个条件同时
+      //       满足，才可以断定当前SIMT Core集群上还需要向前推进一拍。
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
-        //当调用simt_core_cluster::core_cycle()时，它会调用其中所有SM内核的循环。
+        //当调用simt_core_cluster::core_cycle()时，它会调用其中所有SM内核的循环，并实现循环调
+        //度SIMT Core的模拟顺序，由于在本时钟周期内，是从m_core_sim_order.begin()开始调度，因
+        //此为了实现轮询调度，将begin()位置移动到最末尾。这样下次就是从begin+1位置的SIMT Core开
+        //始调度。
         m_cluster[i]->core_cycle();
         //增加活跃的SM数量。get_n_active_sms()返回SIMT Core集群中的活跃SM的数量。active_sms是
-        //SIMT Core集群中的活跃SM的数量。
+        //SIMT Core集群中的活跃SM的数量。get_n_active_sms()会对每个集群内部的SIMT Core进行判断
+        //其是否是active()，在V100配置中，每个集群内部仅有1个SIMT Core。
         *active_sms += m_cluster[i]->get_n_active_sms();
       }
       // Update core icnt/cache stats for AccelWattch
