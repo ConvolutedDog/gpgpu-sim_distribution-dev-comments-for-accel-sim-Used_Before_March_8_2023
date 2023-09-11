@@ -317,7 +317,14 @@ class memory_config {
     //  option_parser_register(
     //      opp, "-gpgpu_n_mem", OPT_UINT32, &m_n_mem,
     //      "number of memory modules (e.g. memory controllers) in gpu", "8");
-    //在V100配置中，有32个内存控制器（DRAM Channel）。
+    //在V100配置中，有32个内存控制器（DRAM Channel），同时每个内存控制器分为了两个子分区，因此，
+    //m_n_sub_partition_per_memory_channel为2，定义为：
+    //  option_parser_register(opp, "-gpgpu_n_sub_partition_per_mchannel", OPT_UINT32,
+    //                         &m_n_sub_partition_per_memory_channel,
+    //                         "number of memory subpartition in each memory module",
+    //                         "1");
+    //而m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel，代表全部内存子
+    //分区的总数。
     m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel;
     fprintf(stdout, "Total number of memory sub partition = %u\n",
             m_n_mem_sub_partition);
