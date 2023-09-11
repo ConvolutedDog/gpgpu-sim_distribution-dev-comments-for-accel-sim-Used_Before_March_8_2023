@@ -414,8 +414,23 @@ enum concrete_scheduler {
 };
 
 /*
-调度单元类。每个对象负责从其warp集中选择一条或多条指令，并发射这些指令进行执行。
-单个Shader Core里有可配置数量的调度器单元。
+调度单元类。每个对象负责从其warp集中选择一条或多条指令，并发射这些指令进行执行。单个Shader Core里有
+可配置数量的调度器单元。从下面的代码可以看到，调度器单元内含有一个scoreboard，一个SIMT栈，一个可供本
+调度器单元仲裁的warp子集合m_supervised_warps，还有一堆用于指令发射的sp_out等发射出口。调度器单元的
+核心方法是cycle()，它会被派生类覆盖，以实现不同的调度策略。调度器单元的构造函数中，参数分别为：
+    shader_core_stats *stats：SIMT Core的统计信息对象；
+    shader_core_ctx *shader：SIMT Core对象；
+    Scoreboard *scoreboard：SIMT Core的记分牌对象；
+    simt_stack **simt：SIMT栈；
+    std::vector<shd_warp_t *> *warp：SIMT Core内的所有warp；
+    register_set *sp_out：SP单元的发射出口；
+    register_set *dp_out：DP单元的发射出口；
+    register_set *sfu_out：SFU单元的发射出口；
+    register_set *int_out：INT单元的发射出口；
+    register_set *tensor_core_out：Tensor Core单元的发射出口；
+    std::vector<register_set *> &spec_cores_out：特殊功能单元的发射出口；
+    register_set *mem_out：存储器单元的发射出口；
+    int id：调度器单元的ID。
 */
 class scheduler_unit {  // this can be copied freely, so can be used in std
                         // containers.
@@ -454,10 +469,25 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   // all the derived schedulers.  The scheduler's behaviour can be
   // modified by changing the contents of the m_next_cycle_prioritized_warps
   // list.
+  //核心调度器cycle()方法是指在所有派生调度器之间通用。可以通过更改m_next_cycle_prioritized_warps
+  //列表的内容来修改调度程序的行为。
   void cycle();
 
   // These are some common ordering fucntions that the
   // higher order schedulers can take advantage of
+  //LRR调度策略的调度器单元的order_warps()函数，为当前调度单元内所划分到的warp进行排序。order_lrr
+  //的定义为：
+  //     void scheduler_unit::order_lrr(
+  //         std::vector<T> &result_list, const typename std::vector<T> &input_list,
+  //         const typename std::vector<T>::const_iterator &last_issued_from_input,
+  //         unsigned num_warps_to_add)
+  //参数列表：
+  //result_list：m_next_cycle_prioritized_warps是一个vector，里面存储当前调度单元当前拍经过warp
+  //             排序后，在下一拍具有优先级调度的warp。
+  //input_list：m_supervised_warps，是一个vector，里面存储当前调度单元所需要仲裁的warp。
+  //last_issued_from_input：则存储了当前调度单元上一拍调度过的warp。
+  //num_warps_to_add：m_supervised_warps.size()，则是当前调度单元在下一拍需要调度的warp数目，在这
+  //                  里这个warp数目就是当前调度器所划分到的warp子集合m_supervised_warps的大小。
   template <typename T>
   void order_lrr(
       typename std::vector<T> &result_list,
@@ -511,27 +541,41 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   // arbitrate between.  This is useful in systems where there is more than
   // one warp scheduler. In a single scheduler system, this is simply all
   // the warps assigned to this core.
+  //m_supervisored_twarps列表是此调度程序应该在其间进行仲裁的所有warps。这在存在多个warp调度器的
+  //系统中非常有用。在单个调度器系统中，这只是分配给该核心的所有warp。
   std::vector<shd_warp_t *> m_supervised_warps;
   // This is the iterator pointer to the last supervised warp you issued
   std::vector<shd_warp_t *>::const_iterator m_last_supervised_issued;
   shader_core_stats *m_stats;
+  //
   shader_core_ctx *m_shader;
   // these things should become accessors: but would need a bigger rearchitect
   // of how shader_core_ctx interacts with its parts.
+  //每个SIMT Core都有一个记分牌。
   Scoreboard *m_scoreboard;
+  //对于每个调度器单元，有一个SIMT堆栈阵列。每个SIMT堆栈对应一个warp。
   simt_stack **m_simt_stack;
   // warp_inst_t** m_pipeline_reg;
   std::vector<shd_warp_t *> *m_warp;
+  //SP单元的发射出口。
   register_set *m_sp_out;
+  //DP单元的发射出口。
   register_set *m_dp_out;
+  //SFU单元的发射出口。
   register_set *m_sfu_out;
+  //INT单元的发射出口。
   register_set *m_int_out;
+  //Tensor Core单元的发射出口。
   register_set *m_tensor_core_out;
+  //Mem单元的发射出口。
   register_set *m_mem_out;
+  //
   std::vector<register_set *> &m_spec_cores_out;
+  //记录上一拍发射的指令数。
   unsigned m_num_issued_last_cycle;
+  //在RRR调度策略中用到，Volta架构中采用的LRR调度策略，暂时不管。
   unsigned m_current_turn_warp;
-
+  //调度器单元的唯一标识ID。
   int m_id;
 };
 
@@ -682,28 +726,161 @@ class swl_scheduler : public scheduler_unit {
   unsigned m_num_warps_to_limit;
 };
 
+/*
+操作数收集器类。Operand Collector Based Register File Unit。每个SM里有一个单独的操作数收集器。
+英伟达的多项专利描述了一种名为"操作数收集器"的结构。操作数收集器是一组缓冲器和仲裁逻辑，用于提供一
+个实际上使用多bank单端口RAM而能够表现出多端口寄存器文件的外观。整个安排节省了能源和面积，这对提高
+吞吐量很重要。AMD公司也使用bank式寄存器文件，但编译器负责确保这些文件的访问不会发生bank冲突。
+
+在指令被解码后，收集器单元被分配来缓冲指令的源操作数。收集器单元不是用来通过寄存器重命名来消除名称
+的依赖性，而是作为一种方法来安排寄存器操作数访问的时间，以便在一个周期内对一个bank的访问不超过一次。
+在其组织中，四个收集器单元中的每一个都包含三个操作数条目。每个操作数条目有四个域：一个有效位、一个
+寄存器标识符、一个就绪位和操作数数据。每个操作数数据字段可以容纳一个由32个四字节元素组成的128字节源
+操作数（warp中每个标量线程有一个四字节值）。此外，收集器单元包含一个标识符，表明该指令属于哪个warp。
+仲裁器包含一个每个bank的读请求队列，以保持访问请求，直到它们被批准。
+
+当一个指令从解码阶段收到，并且有一个收集器单元可用时，它被分配给该指令，并且操作数、warp ID、寄存器
+标识符和有效位被设置。此外，源操作数的读取请求在仲裁器中被排队。为了简化设计，被执行单元写回的数据总
+是优先于读请求。仲裁器选择一组最多四个不冲突的访问来发送至寄存器文件。为了减少Crossbar和收集器单元的
+面积，选择时每个收集器单元每周期只接收一个操作数。
+
+当每个操作数从寄存器文件中读出并放入相应的收集器单元时，一个"就绪位"被设置。最后，当所有的操作数都准
+备好了，指令就被发射到SIMD执行单元。
+
+在GPGPU-Sim模型中，每个后端流水线（SP、SFU、MEM）都有一组专用的收集器单元，它们共享一个通用收集器单
+元池。每个流水线可用的单元数量和一般单元池的容量是可配置的。
+
+该单元包括：
+  1. 端口（m_in_Ports）：包含输入流水线寄存器集（ID_OC）和输出寄存器集（OC_EX）。ID_OC端口中的
+     warp_inst_t将被发布到收集器单元。此外，当收集器单元获得所有所需的源寄存器时，它将由调度单元
+     调度到输出管道寄存器集（OC_EX）。
+  2. 收集器单元（m_cu）：每个收集器单元一次可以容纳一条指令。它将向仲裁员发送对源寄存器的请求。一
+     旦所有源寄存器都准备好了，调度单元就可以将其调度到输出流水线寄存器集（OC_EX）。
+  3. 仲裁器（m_arbiter）：仲裁器从收集器单元接收对源操作数的请求，然后放入请求队列。仲裁器将在每个
+     周期向寄存器文件发出无Bank冲突请求。值得注意的是，仲裁器还用于处理对寄存器堆的写回，并且写回具
+     有比读取更高的优先级。
+  4. 调度单元（m_Dispatch_units）：一旦收集器单元准备就绪，调度单元将把收集器单元中的warp_inst_t
+     调度到OC_EX寄存器集。
+
+操作数收集器被建模为主流水线中的一个阶段，由函数shader_core_ctx::cycle()执行。关于操作数收集器的接
+口，请参考#ALU流水线的更多细节。
+
+opndcoll_rfu_t类是基于操作数收集器的寄存器文件单元的模型。它包含了对收集器单元集、仲裁器和调度单元
+进行抽象的类。
+
+opndcoll_rfu_t::allocate_cu(...)负责将warp_inst_t分配给其指定的操作数收集器组中的空闲操作数收集
+器单元。同时，它在仲裁器的相应Bank队中为所有的源操作数增加一个读取请求。
+
+然而，opndcoll_rfu_t::allocate_reads(...)处理没有冲突的读请求，换句话说，在不同寄存器Bank中的读
+请求和不去同一个操作数收集器的读请求会从仲裁器队列中弹出。这说明写请求的优先级高于读请求。
+
+函数opndcoll_rfu_t::dispatch_ready_cu()将准备好的操作数收集器的操作数寄存器（所有操作数都已收集）
+分配到执行阶段。
+
+函数opndcoll_rfu_t::writeback(const warp_inst_t &inst)在内存流水线的写回阶段被调用。它负责写的
+分配。
+
+在前面的warp调度器代码里单个Sahder Core内的warp调度器的个数由gpgpu_num_sched_per_core配置参数决
+定，Volta架构每核心有4个warp调度器。每个调度器的创建代码：
+     schedulers.push_back(new lrr_scheduler(
+             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
+             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
+             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
+             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
+             &m_pipeline_reg[ID_OC_MEM], i));
+在发射过程中，warp调度器将可发射的指令按照其指令类型分发给不同的单元，这些单元包括SP/DP/SFU/INT/
+TENSOR_CORE/MEM，在发射过程完成后，需要针对指令通过操作数收集器将指令所需的操作数全部收集齐。对于一
+个SM，对应于一个操作数收集器，调度器的发射过程将指令放入：
+    m_pipeline_reg[ID_OC_SP]、m_pipeline_reg[ID_OC_DP]、m_pipeline_reg[ID_OC_SFU]、
+    m_pipeline_reg[ID_OC_INT]、m_pipeline_reg[ID_OC_TENSOR_CORE]、
+    m_pipeline_reg[ID_OC_MEM]
+等寄存器集合中，用以操作数收集器来收集操作数。
+*/
 class opndcoll_rfu_t {  // operand collector based register file unit
  public:
   // constructors
   opndcoll_rfu_t() {
+    //寄存器文件的bank数。详见操作数收集器示意图。
     m_num_banks = 0;
+    //该操作数收集器隶属于哪个SM。
     m_shader = NULL;
+    //该操作数收集器的初始化状态。
     m_initialized = false;
   }
+  
+  //增加collector unit的数量。这里的cu_set定义为：
+  //    enum { SP_CUS, DP_CUS, SFU_CUS, TENSOR_CORE_CUS, INT_CUS, MEM_CUS, GEN_CUS };
+  //这里是collector unit有多个，对应于SP单元一个，对应于DP单元一个，......。
   void add_cu_set(unsigned cu_set, unsigned num_cu, unsigned num_dispatch);
+  
+  //port_vector_t的类型定义为存储寄存器集合register_set的向量：
+  //    typedef std::vector<register_set *> port_vector_t;
   typedef std::vector<register_set *> port_vector_t;
+  
+  //uint_vector_t的类型定义为存储收集器单元set_id的向量：
+  //    typedef std::vector<unsigned int> uint_vector_t;
   typedef std::vector<unsigned int> uint_vector_t;
+  
+  //add_port是将发射阶段的几个流水线寄存器集合ID_OC_SP等，以及后续操作数收集器发出的寄存器集合
+  //OC_EX_SP等，对应于其所属的收集器单元set_id，添加进操作数收集器类。
   void add_port(port_vector_t &input, port_vector_t &ouput,
                 uint_vector_t cu_sets);
+  
   void init(unsigned num_banks, shader_core_ctx *shader);
 
   // modifiers
   bool writeback(warp_inst_t &warp);
 
+  //操作数收集器向前执行一步。
   void step() {
+    //遍历所有调度单元。每个单元找到一个准备好的收集器单元并进行调度。如果能够分别从各个调度器
+    //找到一个空闲准备好可以接收的收集器单元的话，就执行它的分发函数dispatch()。该函数执行的主
+    //要过程是，经过收集器单元收集完源操作数后，将原先暂存在收集器单元指令槽m_warp中的指令推出
+    //到m_output_register中。
     dispatch_ready_cu();
+    //仲裁器检查请求，并返回不同寄存器Bank中的op_t列表，并且这些寄存器Bank不处于Write状态。在
+    //该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些寄存器
+    //Bank不处于Write状态。
     allocate_reads();
+    //端口（m_in_Ports）：包含输入流水线寄存器集合（ID_OC）和输出寄存器集合（OC_EX）。ID_OC端
+    //口中的warp_inst_t将被发布到收集器单元。此外，当收集器单元获得所有所需的源寄存器时，它将由
+    //调度单元调度到输出管道寄存器集（OC_EX）。m_in_ports中有多个input_port_t对象，每个对象分
+    //别对应于SP/DP/SFU/INT/MEM/TC单元（但是一个单元可能会有多个input_port_t对象，不是一一对
+    //应的），例如添加SP单元的input_port_t对象时：
+    //   for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_sp;
+    //     i++) {
+    //     in_ports.push_back(&m_pipeline_reg[ID_OC_SP]);
+    //     out_ports.push_back(&m_pipeline_reg[OC_EX_SP]);
+    //     cu_sets.push_back((unsigned)SP_CUS);
+    //     cu_sets.push_back((unsigned)GEN_CUS);
+    //     m_operand_collector.add_port(in_ports, out_ports, cu_sets);
+    //     in_ports.clear(), out_ports.clear(), cu_sets.clear();
+    //   }
+    //   void opndcoll_rfu_t::add_port(port_vector_t &input, port_vector_t &output,
+    //                                 uint_vector_t cu_sets) {
+    //     m_in_ports.push_back(input_port_t(input, output, cu_sets));
+    //   }
+    //因此，m_in_ports对象：
+    // 0-7 -> {{m_pipeline_reg[ID_OC_SP], m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[ID_OC_MEM],
+    //          m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[ID_OC_DP], m_pipeline_reg[ID_OC_INT],
+    //          m_config->m_specialized_unit[0].ID_OC_SPEC_ID, m_config->m_specialized_unit[1].ID_OC_SPEC_ID, 
+    //          m_config->m_specialized_unit[2].ID_OC_SPEC_ID, m_config->m_specialized_unit[3].ID_OC_SPEC_ID,
+    //          m_config->m_specialized_unit[4].ID_OC_SPEC_ID, m_config->m_specialized_unit[5].ID_OC_SPEC_ID,
+    //          m_config->m_specialized_unit[6].ID_OC_SPEC_ID, m_config->m_specialized_unit[7].ID_OC_SPEC_ID},
+    //         {m_pipeline_reg[OC_EX_SP], m_pipeline_reg[OC_EX_SFU], m_pipeline_reg[OC_EX_MEM],
+    //          m_pipeline_reg[OC_EX_TENSOR_CORE], m_pipeline_reg[OC_EX_DP], m_pipeline_reg[OC_EX_INT],
+    //          m_config->m_specialized_unit[0].OC_EX_SPEC_ID, m_config->m_specialized_unit[1].OC_EX_SPEC_ID, 
+    //          m_config->m_specialized_unit[2].OC_EX_SPEC_ID, m_config->m_specialized_unit[3].OC_EX_SPEC_ID,
+    //          m_config->m_specialized_unit[4].OC_EX_SPEC_ID, m_config->m_specialized_unit[5].OC_EX_SPEC_ID,
+    //          m_config->m_specialized_unit[6].OC_EX_SPEC_ID, m_config->m_specialized_unit[7].OC_EX_SPEC_ID},
+    //         GEN_CUS}
+    //   8 -> {m_pipeline_reg[ID_OC_SP], m_pipeline_reg[OC_EX_SP], {SP_CUS, GEN_CUS}}
+    //   9 -> {m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[OC_EX_SFU], {SFU_CUS, GEN_CUS}}
+    //  10 -> {m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[OC_EX_TENSOR_CORE]
+    //  11 -> {m_pipeline_reg[ID_OC_MEM], m_pipeline_reg[OC_EX_MEM], {MEM_CUS, GEN_CUS}}
+    //所以这里的m_in_ports[p]是第p个input_port_t对象。
     for (unsigned p = 0; p < m_in_ports.size(); p++) allocate_cu(p);
+    //process_banks()会重置所有Bank的状态为NO_ALLOC，空闲状态。
     process_banks();
   }
 
@@ -717,22 +894,37 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     m_arbiter.dump(fp);
   }
 
+  //返回当前操作数收集器隶属于的SM。
   shader_core_ctx *shader_core() { return m_shader; }
 
  private:
   void process_banks() { m_arbiter.reset_alloction(); }
-
+  //遍历所有调度单元。每个单元找到一个准备好的收集器单元并进行调度。如果能够分别从各个调度器
+  //找到一个空闲准备好可以接收的收集器单元的话，就执行它的分发函数dispatch()。该函数执行的
+  //主要过程是，经过收集器单元收集完源操作数后，将原先暂存在收集器单元指令槽m_warp中的指令推
+  //出到m_output_register中。
   void dispatch_ready_cu();
   void allocate_cu(unsigned port);
+  //仲裁器检查请求，并返回不同寄存器Bank中的op_t列表，并且这些寄存器Bank不处于Write状态。在
+  //该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些寄存器
+  //Bank不处于Write状态。
   void allocate_reads();
 
   // types
 
   class collector_unit_t;
 
+  //保留源操作数的类。op_t用来存储一条指令的单个源操作数。如果需要保存所有源操作数，需要使用
+  //op_t*向量。
   class op_t {
    public:
+    //源操作数的有效状态。
     op_t() { m_valid = false; }
+    //初始化当前操作数。重要的参数为：
+    //    collector_unit_t *cu：对应于哪个收集器单元；
+    //    unsigned op：源操作数在其指令所有的源操作数中的排序；
+    //    unsigned reg：源操作数对应的寄存器编号。
+    //register_bank函数就是用来计算regnum所在的bank数。
     op_t(collector_unit_t *cu, unsigned op, unsigned reg, unsigned num_banks,
          unsigned bank_warp_shift, bool sub_core_model,
          unsigned banks_per_sched, unsigned sched_id) {
@@ -789,6 +981,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
+    //
     unsigned get_sp_op() const {
       if (m_warp)
         return m_warp->sp_op;
@@ -797,8 +990,11 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
+    //返回当前操作数所属的收集器单元的ID。
     unsigned get_oc_id() const { return m_cu->get_id(); }
+    //返回当前操作数所属的Bank。
     unsigned get_bank() const { return m_bank; }
+    //返回当前操作数在其指令所有的源操作数中的排序。
     unsigned get_operand() const { return m_operand; }
     void dump(FILE *fp) const {
       if (m_cu)
@@ -807,6 +1003,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else if (!m_warp->empty())
         fprintf(fp, " <R%u, wid:%02u> ", m_register, m_warp->warp_id());
     }
+    //返回当前操作数的寄存器字符串。
     std::string get_reg_string() const {
       char buffer[64];
       snprintf(buffer, 64, "R%u", m_register);
@@ -814,16 +1011,24 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     }
 
     // modifiers
+    //重置当前操作数的状态为无效。
     void reset() { m_valid = false; }
 
    private:
+    //当前操作数是否有效。
     bool m_valid;
+    //当前操作数所属的收集器单元。
     collector_unit_t *m_cu;
+    //当前操作数所属的指令。
     const warp_inst_t *m_warp;
+    //当前操作数在其指令所有的源操作数中的排序。
     unsigned m_operand;  // operand offset in instruction. e.g., add r1,r2,r3;
                          // r2 is oprd 0, r3 is 1 (r1 is dst)
+    //当前操作数对应的寄存器编号。
     unsigned m_register;
+    //当前操作数隶属于哪个Bank。
     unsigned m_bank;
+    //当前操作数所属指令是哪个调度器发射的。
     unsigned m_shced_id;  // scheduler id that has issued this inst
   };
 
@@ -833,11 +1038,16 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     WRITE_ALLOC,
   };
 
+  //跟踪一个Bank的状态，一个allocation_t对象是一个Bank的状态。
   class allocation_t {
    public:
+    //初始化时，设置Bank状态为NO_ALLOC，空闲状态。
     allocation_t() { m_allocation = NO_ALLOC; }
+    //返回当前Bank是否是读状态，读状态时，m_allocation为READ_ALLOC。
     bool is_read() const { return m_allocation == READ_ALLOC; }
+    //返回当前Bank是否是写状态，写状态时，m_allocation为WRITE_ALLOC。
     bool is_write() const { return m_allocation == WRITE_ALLOC; }
+    //返回当前Bank是否是空闲状态，空闲状态时，m_allocation为NO_ALLOC。
     bool is_free() const { return m_allocation == NO_ALLOC; }
     void dump(FILE *fp) const {
       if (m_allocation == NO_ALLOC) {
@@ -851,23 +1061,32 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       }
       fprintf(fp, "\n");
     }
+    //当前Bank是空闲状态时，才可以将其分配为读状态，读的操作数为op。
     void alloc_read(const op_t &op) {
       assert(is_free());
       m_allocation = READ_ALLOC;
       m_op = op;
     }
+    //当前Bank是空闲状态时，才可以将其分配为写状态，写的操作数为op。
     void alloc_write(const op_t &op) {
       assert(is_free());
       m_allocation = WRITE_ALLOC;
       m_op = op;
     }
+    //重置当前Bank的状态为NO_ALLOC，空闲状态。
     void reset() { m_allocation = NO_ALLOC; }
 
    private:
+    //m_allocation的定义为：enum alloc_t {NO_ALLOC, READ_ALLOC, WRITE_ALLOC,}; 它存储了当
+    //前Bank的状态，或是空闲状态，或是读状态，或是写状态。
     enum alloc_t m_allocation;
+    //读或写当前Bank的操作数。
     op_t m_op;
   };
 
+  //仲裁器。仲裁器（m_arbiter）：仲裁器从收集器单元接收对源操作数的请求，然后放入请求队列。器将
+  //在每个周期向寄存器文件发出无Bank冲突请求。值得注意的是，仲裁器还用于处理对寄存器堆的写回，并
+  //且写回具有比读取更高的优先级。
   class arbiter_t {
    public:
     // constructors
@@ -883,15 +1102,39 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     void init(unsigned num_cu, unsigned num_banks) {
       assert(num_cu > 0);
       assert(num_banks > 0);
+      //当前操作数收集器的收集器单元的数目。
       m_num_collectors = num_cu;
+      //当前操作数收集器的寄存器文件Bank数。
       m_num_banks = num_banks;
+      //
       _inmatch = new int[m_num_banks];
       _outmatch = new int[m_num_collectors];
       _request = new int *[m_num_banks];
+      //每次访问当前操作数收集器的寄存器文件的访问数是收集器单元的个数，即为每个收集器单元收集一
+      //个操作数。
       for (unsigned i = 0; i < m_num_banks; i++)
         _request[i] = new int[m_num_collectors];
+      //add_read_requests函数会从收集器单元获取所有的源操作数，并将它们放入m_queue[bank]队列。
+      //add_read_requests函数的定义：
+      //     void add_read_requests(collector_unit_t *cu) {
+      //       //获取操作数单元的所有操作数，src[i]是第i个操作数。
+      //       const op_t *src = cu->get_operands();
+      //       for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) {
+      //         //对所有操作数循环。
+      //         const op_t &op = src[i];
+      //         if (op.valid()) {
+      //           //如果操作数有效，则获取它们的Bank编号，并将其放入m_queue[bank]队列。
+      //           unsigned bank = op.get_bank();
+      //           m_queue[bank].push_back(op);
+      //         }
+      //       }
+      //     }
+      //可以看出，m_queue是一个以bank来索引的操作数队列，m_queue[i]是第i个bank获取的操作数。
       m_queue = new std::list<op_t>[num_banks];
+      //用于存储每个Bank的状态，包括NO_ALLOC, READ_ALLOC, WRITE_ALLOC。
       m_allocated_bank = new allocation_t[num_banks];
+      //m_allocator_rr_head是一个以收集器单元的ID为索引的数组，m_allocator_rr_head[i]是第i
+      //个cu下一个需要检查的Bank的Bank ID。cu # -> next bank to check for request (rr-arb)
       m_allocator_rr_head = new unsigned[num_cu];
       for (unsigned n = 0; n < num_cu; n++)
         m_allocator_rr_head[n] = n % num_banks;
@@ -922,38 +1165,58 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     // modifiers
     std::list<op_t> allocate_reads();
 
+    //从收集器单元获取所有的源操作数，并将它们放入m_queue[bank]队列。
     void add_read_requests(collector_unit_t *cu) {
+      //获取操作数单元的所有操作数，src[i]是第i个操作数。
       const op_t *src = cu->get_operands();
       for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) {
+        //对所有操作数循环。
         const op_t &op = src[i];
         if (op.valid()) {
+          //如果操作数有效，则获取它们的Bank编号，并将其放入m_queue[bank]队列。
           unsigned bank = op.get_bank();
+          //m_queue是一个以bank来索引的操作数队列，m_queue[i]是第i个bank获取的操作数。
           m_queue[bank].push_back(op);
         }
       }
     }
+    //m_allocated_bank是一组状态机，用于跟踪每个register bank的状态。它具有以下三个状态：
+    //    READ_ALLOC、WRITE_ALLOC、NO_ALLOC
+    //m_queue是一个FIFO队列，用于缓冲对register bank的所有读取请求。基本上，m_allocated_bank
+    //和m_queue中的条目数等于SM核心中的寄存器组数（V100为8）。
     bool bank_idle(unsigned bank) const {
       return m_allocated_bank[bank].is_free();
     }
+    //分配给第bank号Bank的写状态，写的操作数为op，设置m_allocated_bank。
     void allocate_bank_for_write(unsigned bank, const op_t &op) {
       assert(bank < m_num_banks);
       m_allocated_bank[bank].alloc_write(op);
     }
+    //分配给第bank号Bank的读状态，读的操作数为op，设置m_allocated_bank。
     void allocate_for_read(unsigned bank, const op_t &op) {
       assert(bank < m_num_banks);
       m_allocated_bank[bank].alloc_read(op);
     }
+    //重置所有Bank的状态为NO_ALLOC，空闲状态。
     void reset_alloction() {
       for (unsigned b = 0; b < m_num_banks; b++) m_allocated_bank[b].reset();
     }
 
    private:
+    //当前操作数收集器的寄存器单元的Bank数目。
     unsigned m_num_banks;
+    //当前操作数收集器的收集器单元的数目。
     unsigned m_num_collectors;
 
+    //m_allocated_bank是一组状态机，用于跟踪每个register bank的状态。它具有以下三个状态：
+    //    READ_ALLOC、WRITE_ALLOC、NO_ALLOC
     allocation_t *m_allocated_bank;  // bank # -> register that wins
+    //m_queue是一个FIFO队列，用于缓冲对register bank的所有读取请求。m_queue是一个以bank
+    //来索引的操作数队列，m_queue[i]是第i个bank获取的操作数。
     std::list<op_t> *m_queue;
 
+    //m_allocator_rr_head是一个以收集器单元的ID为索引的数组，m_allocator_rr_head[i]是第i
+    //个cu下一个需要检查的Bank的Bank ID。cu # -> next bank to check for request (rr-arb)
     unsigned *
         m_allocator_rr_head;  // cu # -> next bank to check for request (rr-arb)
     unsigned m_last_cu;       // first cu to check while arb-ing banks (rr)
@@ -963,6 +1226,14 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     int **_request;
   };
 
+  //输入端口类。input_port_t的定义：
+  //port_vector_t的类型定义为存储寄存器集合register_set的向量：
+  //    typedef std::vector<register_set *> port_vector_t;
+  //uint_vector_t的类型定义为存储收集器单元set_id的向量：
+  //    typedef std::vector<unsigned int> uint_vector_t;
+  //后续add_port是将发射阶段的几个流水线寄存器集合ID_OC_SP等，以及后续操作数收集器发出的
+  //寄存器集合OC_EX_SP等，对应于其所属的收集器单元set_id，添加进操作数收集器类，这三者的
+  //组合便是input_port_t对象。
   class input_port_t {
    public:
     input_port_t(port_vector_t &input, port_vector_t &output,
@@ -976,12 +1247,15 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     uint_vector_t m_cu_sets;
   };
 
+  //收集器单元类。
   class collector_unit_t {
    public:
     // constructors
+    //构造函数。
     collector_unit_t() {
       m_free = true;
       m_warp = NULL;
+      //经过收集器单元收集完源操作数后，将指令推出到m_output_register中。
       m_output_register = NULL;
       m_src_op = new op_t[MAX_REG_OPERANDS * 2];
       m_not_ready.reset();
@@ -990,6 +1264,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_bank_warp_shift = 0;
     }
     // accessors
+    //返回当前收集器单元是否所有源操作数都准备好了。
     bool ready() const;
     const op_t *get_operands() const { return m_src_op; }
     void dump(FILE *fp, const shader_core_ctx *shader) const;
@@ -1010,6 +1285,10 @@ class opndcoll_rfu_t {  // operand collector based register file unit
               unsigned num_banks_per_sched);
     bool allocate(register_set *pipeline_reg, register_set *output_reg);
 
+    //m_not_ready的定义为：
+    //    std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
+    //m_not_ready是一个位向量，用来存储一条指令的所有源操作数是否处于非就绪状态。这里设置
+    //第op个源操作数为就绪状态。
     void collect_operand(unsigned op) { m_not_ready.reset(op); }
     unsigned get_num_operands() const { return m_warp->get_num_operands(); }
     unsigned get_num_regs() const { return m_warp->get_num_regs(); }
@@ -1021,9 +1300,14 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned m_cuid;  // collector unit hw id
     unsigned m_warp_id;
     warp_inst_t *m_warp;
+    //经过收集器单元收集完源操作数后，将指令推出到m_output_register中。
     register_set
         *m_output_register;  // pipeline register to issue to when ready
     op_t *m_src_op;
+    //m_not_ready的定义为：
+    //    std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
+    //m_not_ready是一个位向量，用来存储一条指令的所有源操作数是否处于非就绪状态。这里设置
+    //第op个源操作数为非就绪状态。
     std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
     unsigned m_num_banks;
     unsigned m_bank_warp_shift;
@@ -1031,30 +1315,90 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
     unsigned m_num_banks_per_sched;
     bool m_sub_core_model;
+    //这里reg_id其实是对应的调度器的ID。
     unsigned m_reg_id;  // if sub_core_model enabled, limit regs this cu can r/w
   };
 
+  //一个输出端口对应一个调度器。
   class dispatch_unit_t {
    public:
+    // for now each collector set gets dedicated dispatch units.
+    //目前，每个收集器set都有专用的调度单元，由gpgpu_operand_collector_num_out_ports_sp
+    //等确定。在V100配置中：
+    //    gpgpu_operand_collector_num_out_ports_sp = 1
+    //    gpgpu_operand_collector_num_out_ports_dp = 0
+    //    gpgpu_operand_collector_num_out_ports_sfu = 1
+    //    gpgpu_operand_collector_num_out_ports_int = 0
+    //    gpgpu_operand_collector_num_out_ports_tensor_core = 1
+    //    gpgpu_operand_collector_num_out_ports_mem = 1
+    //    gpgpu_operand_collector_num_out_ports_gen = 8
+    //这里调度单元的数目与输出端口的数目一致，即：
+    //    对应于m_cus[SP_CUS         ]有1个调度器；
+    //    对应于m_cus[DP_CUS         ]有0个调度器；
+    //    对应于m_cus[SFU_CUS        ]有1个调度器；
+    //    对应于m_cus[INT_CUS        ]有0个调度器；
+    //    对应于m_cus[TENSOR_CORE_CUS]有1个调度器；
+    //    对应于m_cus[MEM_CUS        ]有1个调度器；
+    //    对应于m_cus[GEN_CUS        ]有8个调度器。
+    //这里是调度器的初始化，调用时：
+    //    for (unsigned i = 0; i < num_dispatch; i++)
+    //      m_dispatch_units.push_back(dispatch_unit_t(&m_cus[set_id]));
+    //传入的参数cus是m_cus[set_id]，对应于set_id的收集器单元：
+    //    m_cus[SP_CUS         ]是一个vector，存储了SP         单元的4个收集器单元；
+    //    m_cus[DP_CUS         ]是一个vector，存储了DP         单元的0个收集器单元；
+    //    m_cus[SFU_CUS        ]是一个vector，存储了SFU        单元的4个收集器单元；
+    //    m_cus[INT_CUS        ]是一个vector，存储了INT        单元的0个收集器单元；
+    //    m_cus[TENSOR_CORE_CUS]是一个vector，存储了TENSOR_CORE单元的4个收集器单元；
+    //    m_cus[MEM_CUS        ]是一个vector，存储了MEM        单元的2个收集器单元；
+    //    m_cus[GEN_CUS        ]是一个vector，存储了GEN        单元的8个收集器单元。
     dispatch_unit_t(std::vector<collector_unit_t> *cus) {
       m_last_cu = 0;
+      //对应于set_id的收集器单元向量。
       m_collector_units = cus;
+      //对应于set_id的收集器单元的个数。
       m_num_collectors = (*cus).size();
       m_next_cu = 0;
     }
+
+    //初始化。
     void init(bool sub_core_model, unsigned num_warp_scheds) {
+      //sub_core_model模式。
       m_sub_core_model = sub_core_model;
+      //warp调度器个数。
       m_num_warp_scheds = num_warp_scheds;
     }
 
+    //找到一个空闲准备好可以接收的收集器单元。
     collector_unit_t *find_ready() {
       // With sub-core enabled round robin starts with the next cu assigned to a
-      // different sub-core than the one that dispatched last
+      // different sub-core than the one that dispatched last.
+
+      //每个warp调度器可以分到的收集器单元的个数。例如，在创建m_cus[TENSOR_CORE_CUS]时，
+      //m_cus[TENSOR_CORE_CUS]的大小即为m_num_collectors，m_cus[TENSOR_CORE_CUS]是一
+      //个vector，存储了TENSOR_CORE单元的4个收集器单元；那么这里m_num_warp_scheds=4，则
+      //cusPerSched=4/4=1。因此0号调度器可使用第0个收集器单元，1号调度器可使用第1个收集器
+      //单元，2号调度器可使用第2个收集器单元，3号调度器可使用第3个收集器单元。
       unsigned cusPerSched = m_num_collectors / m_num_warp_scheds;
+      //rr_increment是在保证下一个选定的cu与上一个选定的cu不同属于同一个warp调度器的范
+      //围。例如，如果m_num_collectors=16，m_num_warp_scheds=4，m_last_cu=0，那么就有
+      //cusPerSched=4，rr_increment=4，那下一个选定的cu就是4，5，6，7，8，9，10，...。
+      //正好掠过了0，1，2，3，这4个cu，这4个cu属于同一个warp调度器。
       unsigned rr_increment = m_sub_core_model ?
                               cusPerSched - (m_last_cu % cusPerSched) : 1;
       for (unsigned n = 0; n < m_num_collectors; n++) {
         unsigned c = (m_last_cu + n + rr_increment) % m_num_collectors;
+        //如果收集器单元准备好了，那么就返回该收集器单元。注意这里，调度单元的数目与输入端
+        //口的数目一致，即：
+        //    对应于m_cus[SP_CUS         ]有1个调度器；
+        //    对应于m_cus[DP_CUS         ]有0个调度器；
+        //    对应于m_cus[SFU_CUS        ]有1个调度器；
+        //    对应于m_cus[INT_CUS        ]有0个调度器；
+        //    对应于m_cus[TENSOR_CORE_CUS]有1个调度器；
+        //    对应于m_cus[MEM_CUS        ]有1个调度器；
+        //    对应于m_cus[GEN_CUS        ]有8个调度器。
+        //这里的m_collector_units是一个指针，指向m_cus[set_id]，对应于set_id的收集器单
+        //元，且它只调度对应于set_id的收集器单元。(*m_collector_units)[c]是对应于set_id
+        //的第c个收集器单元，如果该收集器单元准备好了，那么就返回该收集器单元。
         if ((*m_collector_units)[c].ready()) {
           m_last_cu = c;
           return &((*m_collector_units)[c]);
@@ -1064,27 +1408,47 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     }
 
    private:
+    //对应于set_id的收集器单元的个数。
     unsigned m_num_collectors;
+    //对应于set_id的收集器单元向量。
     std::vector<collector_unit_t> *m_collector_units;
+    //上一个调度的收集器单元。
     unsigned m_last_cu;  // dispatch ready cu's rr
+    //没有用到这个变量。
     unsigned m_next_cu;  // for initialization
+    //sub_core_model模式。
     bool m_sub_core_model;
+    //一个SM内warp调度器的个数。
     unsigned m_num_warp_scheds;
   };
 
   // opndcoll_rfu_t data members
+  //是否操作数收集器已经被初始化。
   bool m_initialized;
-
+  //没用到这个变量。
   unsigned m_num_collector_sets;
   // unsigned m_num_collectors;
+  //寄存器文件的bank数，在V100配置中，m_num_banks被初始化为16。
   unsigned m_num_banks;
+  //m_bank_warp_shift被初始化为5。
   unsigned m_bank_warp_shift;
+  //32。
   unsigned m_warp_size;
+  //收集器单元列表。收集器单元（m_cu）：每个收集器单元一次可以容纳一条指令。它将向器发送对源寄存
+  //器的请求。一旦所有源寄存器都准备好了，调度单元就可以将其调度到输出流水线寄存器集（OC_EX）。
   std::vector<collector_unit_t *> m_cu;
+  //仲裁器。仲裁器（m_arbiter）：仲裁器从收集器单元接收对源操作数的请求，然后放入请求队列。器将
+  //在每个周期向寄存器文件发出无Bank冲突请求。值得注意的是，仲裁器还用于处理对寄存器堆的写回，并
+  //且写回具有比读取更高的优先级。
   arbiter_t m_arbiter;
-
+  //每个warp调度器可用的bank。在sub_core_model模式中，每个warp调度器可用的bank数量是
+  //有限的。在V100配置中，共有4个warp调度器，0号warp调度器可用的bank为0-3，1号warp调
+  //度器可用的bank为4-7，2号warp调度器可用的bank为8-11，3号warp调度器可用的bank为12-
+  //15：m_num_banks_per_sched = num_banks / shader->get_config()->gpgpu_num_sched_per_core;
   unsigned m_num_banks_per_sched;
+  //每个SM内warp调度器的个数。
   unsigned m_num_warp_scheds;
+  //sub_core_model模式。
   bool sub_core_model;
 
   // unsigned m_num_ports;
@@ -1093,11 +1457,18 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   // std::vector<unsigned> m_num_collector_units;
   // warp_inst_t **m_alu_port;
 
+  //端口（m_in_Ports）：包含输入流水线寄存器集合（ID_OC）和输出寄存器集合（OC_EX）。ID_OC端口中的
+  //warp_inst_t将被发布到收集器单元。此外，当收集器单元获得所有所需的源寄存器时，它将由调度单元调度
+  //到输出管道寄存器集（OC_EX）。
   std::vector<input_port_t> m_in_ports;
+  //id对应收集器单元的的字典。
   typedef std::map<unsigned /* collector set */,
                    std::vector<collector_unit_t> /*collector sets*/>
       cu_sets_t;
+  //操作数收集器的集合。
   cu_sets_t m_cus;
+  //调度单元。调度单元（m_Dispatch_units）：一旦收集器单元准备就绪，调度单元将把收集器单元中的warp
+  //_inst_t调度到OC_EX寄存器集。
   std::vector<dispatch_unit_t> m_dispatch_units;
 
   // typedef std::map<warp_inst_t**/*port*/,dispatch_unit_t> port_to_du_t;
@@ -1454,7 +1825,22 @@ class shader_core_mem_fetch_allocator;
 class cache_t;
 
 /*
-LDST单元类。
+LDST单元类。ldst_unit类实现了Shader流水线的内存阶段，实例化并操作所有的Shader内存：纹理（m_L1T）、
+常量（m_L1C）和数据（m_L1D）。ldst_unit::cycle()实现了该单元操作的拍数向前推进，并在每周期被泵入
+m_config->mem_warp_parts次数。
+
+ldst_unit::cycle()处理来自互连网络的内存响应（存储在m_response_fifo中），填充缓存并标记存储为完成。
+该函数还使得缓存拍数向前推进，以便它们可以向互连网络发送它们Miss的数据的请求。对每种类型的L1存储的缓
+存访问分别在shared_cycle()、constant_cycle()、texture_cycle()和memory_cycle()中完成。 
+
+memory_cycle用于访问L1 data cache。这些函数中的每一个都会调用process_memory_access_queue()，这是
+一个通用函数，从指令的内部访问队列中抽取一个访问，并将这个请求发送到缓存中。如果这个访问在这个周期内不
+能被处理（也就是说，它既没有错过也没有命中缓存，这可能发生在各种系统队列已经满了的情况下，或者是所有
+lines in a particular way都被reserved，还没有被filled），那么这个访问将在下一个周期再次尝试。
+
+值得注意的是，并不是所有的指令都能到达该单元的写回阶段。所有的存储指令和加载指令在所有请求的缓存块被命
+中的情况下都会在cycle()函数中退出流水线。这是因为它们不需要等待互连网络的响应，可以绕过写回逻辑，将指
+令所请求的cache lines和已经返回的cache lines记录下来。
 */
 class ldst_unit : public pipelined_simd_unit {
  public:
@@ -2668,6 +3054,8 @@ class shader_core_ctx : public core_t {
   unsigned m_num_function_units;
   std::vector<unsigned> m_dispatch_port;
   std::vector<unsigned> m_issue_port;
+  //m_fu是SIMD功能单元的向量。m_fu包含：
+  //  4个SP单元，4个DP单元，4个INT单元，4个SFU单元，4个TC单元，多个或零个specialized_unit，1个LD/ST单元。
   std::vector<simd_function_unit *>
       m_fu;  // stallable pipelines should be last in this array
   ldst_unit *m_ldst_unit;
