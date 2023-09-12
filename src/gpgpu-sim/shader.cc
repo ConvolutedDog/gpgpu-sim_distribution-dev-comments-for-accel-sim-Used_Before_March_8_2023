@@ -97,6 +97,9 @@ std::list<unsigned> shader_core_ctx::get_regs_written(const inst_t &fvt) const {
   return result;
 }
 
+/*
+为当前SM创建所有的warp，warp的数量是m_config->max_warps_per_shader确定。
+*/
 void exec_shader_core_ctx::create_shd_warp() {
   m_warp.resize(m_config->max_warps_per_shader);
   for (unsigned k = 0; k < m_config->max_warps_per_shader; ++k) {
@@ -104,17 +107,39 @@ void exec_shader_core_ctx::create_shd_warp() {
   }
 }
 
+/*
+为当前SM创建所有的流水线单元。
+*/
 void shader_core_ctx::create_front_pipeline() {
   // pipeline_stages is the sum of normal pipeline stages and specialized_unit
   // stages * 2 (for ID and EX)
+  //全部的流水线阶段数等于普通流水线阶段数加上专用单元的流水线阶段数乘以2（ID和EX）。
   unsigned total_pipeline_stages =
       N_PIPELINE_STAGES + m_config->m_specialized_unit.size() * 2;
   m_pipeline_reg.reserve(total_pipeline_stages);
+  //流水线阶段的宽度配置在-gpgpu_pipeline_widths中设置：
+  // const char *const pipeline_stage_name_decode[] = {
+  //   "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
+  //   "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
+  //   "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
+  //   "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+  // option_parser_register(
+  //   opp, "-gpgpu_pipeline_widths", OPT_CSTR, &pipeline_widths_string,
+  //   "Pipeline widths "
+  //   "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
+  //   "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
+  //   "1,1,1,1,1,1,1,1,1,1,1,1,1");
+  //在V100中配置为：-gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
+  //这里流水线的宽度其实就是流水线寄存器内部能够存储多少条指令，这个数量是和单元的数目挂
+  //钩的。
   for (int j = 0; j < N_PIPELINE_STAGES; j++) {
+    //共有N_PIPELINE_STAGES个流水线阶段，因此设置N_PIPELINE_STAGES个流水线寄存器。
     m_pipeline_reg.push_back(
         register_set(m_config->pipe_widths[j], pipeline_stage_name_decode[j]));
   }
   for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
+    //这里为专用单元的流水线阶段设置ID_OC流水线寄存器，但是在V100配置中，没有配置专用单
+    //元。
     m_pipeline_reg.push_back(
         register_set(m_config->m_specialized_unit[j].id_oc_spec_reg_width,
                      m_config->m_specialized_unit[j].name));
@@ -123,6 +148,8 @@ void shader_core_ctx::create_front_pipeline() {
         &m_pipeline_reg[m_pipeline_reg.size() - 1]);
   }
   for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
+    //这里为专用单元的流水线阶段设置OC_EX流水线寄存器，但是在V100配置中，没有配置专用单
+    //元。
     m_pipeline_reg.push_back(
         register_set(m_config->m_specialized_unit[j].oc_ex_spec_reg_width,
                      m_config->m_specialized_unit[j].name));
@@ -133,6 +160,7 @@ void shader_core_ctx::create_front_pipeline() {
   if (m_config->sub_core_model) {
     // in subcore model, each scheduler should has its own issue register, so
     // num scheduler = reg width
+    //这里说明了每个SM内的warp调度器的个数与所有的寄存器集合的宽度相同。
     assert(m_config->gpgpu_num_sched_per_core ==
            m_pipeline_reg[ID_OC_SP].get_size());
     assert(m_config->gpgpu_num_sched_per_core ==
@@ -155,12 +183,18 @@ void shader_core_ctx::create_front_pipeline() {
     }
   }
 
+  //线程状态集合。
   m_threadState = (thread_ctx_t *)calloc(sizeof(thread_ctx_t),
                                          m_config->n_thread_per_shader);
-
+  //未完成的线程数（当此Shader Core上的所有线程都完成时，==0）。
   m_not_completed = 0;
+  //m_active_threads是Shader Core上活跃线程的位图。
   m_active_threads.reset();
+  //m_n_active_cta是Shader Core上活跃的线程块的数量。
   m_n_active_cta = 0;
+  //m_cta_status是Shader Core内的CTA的状态，MAX_CTA_PER_SHADER是每个Shader Core内的
+  //最大可并发CTA个数。m_cta_status[i]里保存了第i个CTA中包含的活跃线程总数量，该数量<=
+  //CTA的总线程数量。
   for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
   for (unsigned i = 0; i < m_config->n_thread_per_shader; i++) {
     m_thread[i] = NULL;
@@ -169,6 +203,7 @@ void shader_core_ctx::create_front_pipeline() {
   }
 
   // m_icnt = new shader_memory_interface(this,cluster);
+  //在V100配置中，m_config->gpgpu_perfect_mem为false。
   if (m_config->gpgpu_perfect_mem) {
     m_icnt = new perfect_memory_interface(this, m_cluster);
   } else {
@@ -2516,28 +2551,38 @@ void shader_core_ctx::writeback() {
     m_last_inst_gpu_sim_cycle = m_gpu->gpu_sim_cycle;
     m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
     pipe_reg->clear();
-    //循环下一个流水线寄存器集合m_pipeline_reg[EX_WB]中的有效指令寄存器，执行它的停止任务。
+    //循环下一个流水线寄存器集合m_pipeline_reg[EX_WB]中的有效指令寄存器，执行它的停止
+    //任务。
     preg = m_pipeline_reg[EX_WB].get_ready();
     pipe_reg = (preg == NULL) ? NULL : *preg;
   }
 }
 
+/*
+判断LDST单元访问shared memory是否会Stall。Stall的话返回0，没有Stall的话返回1。
+*/
 bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
                              mem_stage_access_type &fail_type) {
+  //如果指令不是shared memory指令，则返回true。
   if (inst.space.get_type() != shared_space) return true;
-
+  //如果指令的活跃线程数为0，则返回true。
   if (inst.active_count() == 0) return true;
 
+  //返回该条指令还剩下多少initiation_interval。
   if (inst.has_dispatch_delay()) {
     m_stats->gpgpu_n_shmem_bank_access[m_sid]++;
   }
-
+  //初始化时设置为cycles = initiation_interval;，每次调用dispatch_delay()时，cycles
+  //减1，直到cycles=0。
   bool stall = inst.dispatch_delay();
   if (stall) {
+    //Stall类型为S_MEM，原因是Bank conflict。
     fail_type = S_MEM;
     rc_fail = BK_CONF;
   } else
     rc_fail = NO_RC_FAIL;
+  
+  //Stall的话返回0，没有Stall的话返回1。
   return !stall;
 }
 
@@ -2598,15 +2643,23 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue(cache_t *cache,
   return process_cache_access(cache, mf->get_addr(), inst, events, mf, status);
 }
 
+/*
+处理对L1数据缓存的内存访问。
+*/
 mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     l1_cache *cache, warp_inst_t &inst) {
   mem_stage_stall_type result = NO_RC_FAIL;
+  //inst.accessq_empty()返回当前指令的访存操作的列表是否为空。
   if (inst.accessq_empty()) return result;
 
+  //在V100中，m_config->m_L1D_config.l1_latency被配置为20拍，指的是L1数据缓存命中时的访问拍数。
   if (m_config->m_L1D_config.l1_latency > 0) {
+    //在V100中，m_config->m_L1D_config.l1_banks被配置为4，指的是L1数据缓存的bank数，即每拍能够
+    //处理的请求数最大不超过4。
     for (int j = 0; j < m_config->m_L1D_config.l1_banks;
          j++) {  // We can handle at max l1_banks reqs per cycle
 
+      //inst.accessq_empty()返回当前指令的访存操作的列表是否为空。
       if (inst.accessq_empty()) return result;
 
       mem_fetch *mf =
@@ -2615,11 +2668,28 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
                                     m_core->get_gpu()->gpu_tot_sim_cycle);
       unsigned bank_id = m_config->m_L1D_config.set_bank(mf->get_addr());
       assert(bank_id < m_config->m_L1D_config.l1_banks);
-
+      //l1_latency_queue的定义为：
+      //    std::vector<std::deque<mem_fetch *>> l1_latency_queue;
+      //初始化为：
+      //    l1_latency_queue.resize(m_config->m_L1D_config.l1_banks);
+      //    for (unsigned j = 0; j < m_config->m_L1D_config.l1_banks; j++)
+      //      l1_latency_queue[j].resize(m_config->m_L1D_config.l1_latency,
+      //                                 (mem_fetch *)NULL);
+      //其是个二维数组，第一维的索引为bank_id，第二维的长度为20，每个元素都是(mem_fetch *)对象。
+      //l1_latency_queue用于模拟L1数据缓存的访问延迟，在V100的配置中，m_config->m_L1D_config.
+      //l1_latency被配置为20拍，指的是L1数据缓存命中时的访问拍数。4个Bank每个Bank可以处理至多20
+      //个访问请求，例如第0号Bank，l1_latency_queue[0]里存储了20个访问请求，当新的访问请求到来
+      //时，请求直接加到l1_latency_queue[0][19]位置，并且l1_latency_queue[0][0]的请求代表它已
+      //经处理完毕。每一拍，l1_latency_queue[0]中的请求都会向前移动一个位置，即l1_latency_queue
+      //[0][0]的请求会被删除，l1_latency_queue[0][19]的请求会被移动到l1_latency_queue[0][18]
+      //的位置，l1_latency_queue[0][18]的请求会被移动到l1_latency_queue[0][17]的位置，以此类推。
       if ((l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1]) ==
           NULL) {
+        //这里是如果l1_latency_queue[bank_id][19]为空的话，就将新的请求写入到l1_latency_queue
+        //[bank_id][19]的位置。
         l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
 
+        //如果mf所属指令是存储操作。
         if (mf->get_inst().is_store()) {
           unsigned inc_ack =
               (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
@@ -2632,12 +2702,15 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 
         inst.accessq_pop_back();
       } else {
+        //这里是如果l1_latency_queue[bank_id][19]不为空的话，则是发生Bank conflict，需要等待。
         result = BK_CONF;
         delete mf;
         break;  // do not try again, just break from the loop and try the next
                 // cycle
       }
     }
+    //inst.accessq_empty()返回当前指令的访存操作的列表是否为空。不为空的话，且不是因为Bank冲突
+    //导致Stall，则发生coalescing stall。
     if (!inst.accessq_empty() && result != BK_CONF) result = COAL_STALL;
 
     return result;
@@ -2782,6 +2855,9 @@ bool ldst_unit::texture_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
   return inst.accessq_empty();  // done if empty.
 }
 
+/*
+判断LDST单元访问global/local/param memory是否会Stall。Stall的话返回0，没有Stall的话返回1。
+*/
 bool ldst_unit::memory_cycle(warp_inst_t &inst,
                              mem_stage_stall_type &stall_reason,
                              mem_stage_access_type &access_type) {
@@ -2803,9 +2879,11 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
     bypassL1D = true;
   } else if (inst.space.is_global()) {  // global memory access
     // skip L1 cache if the option is enabled
+    //在V100配置中，gpgpu_gmem_skip_L1D设置为0。
     if (m_core->get_config()->gmem_skip_L1D && (CACHE_L1 != inst.cache_op))
       bypassL1D = true;
   }
+  //所以只有在使用ld.cg时才会绕过L1数据缓存。
   if (bypassL1D) {
     // bypass L1 cache
     unsigned control_size =
@@ -2813,12 +2891,14 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
     unsigned size = access.get_size() + control_size;
     // printf("Interconnect:Addr: %x, size=%d\n",access.get_addr(),size);
     if (m_icnt->full(size, inst.is_store() || inst.isatomic())) {
+      //ICNT堵塞。
       stall_cond = ICNT_RC_FAIL;
     } else {
       mem_fetch *mf =
           m_mf_allocator->alloc(inst, access,
                                 m_core->get_gpu()->gpu_sim_cycle +
                                     m_core->get_gpu()->gpu_tot_sim_cycle);
+      //将mf放入ICNT的发送队列中。
       m_icnt->push(mf);
       inst.accessq_pop_back();
       // inst.clear_active( access.get_warp_mask() );
@@ -2830,9 +2910,13 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
         m_core->inc_store_req(inst.warp_id());
     }
   } else {
+    // do not bypass L1 cache
     assert(CACHE_UNDEFINED != inst.cache_op);
+    //处理对L1数据缓存的内存访问。
     stall_cond = process_memory_access_queue_l1cache(m_L1D, inst);
   }
+  //inst.accessq_empty()返回当前指令的访存操作的列表是否为空。这里是当前指令的访存操作的列表不为空，且
+  //没有发生STALL，则说明发生了Coalescing Stall。
   if (!inst.accessq_empty() && stall_cond == NO_RC_FAIL)
     stall_cond = COAL_STALL;
   if (stall_cond != NO_RC_FAIL) {
@@ -3561,15 +3645,31 @@ void ldst_unit::cycle() {
   }
 
   warp_inst_t &pipe_reg = *m_dispatch_reg;
+  //mem_stage_stall_type的定义：
+  //    enum mem_stage_stall_type { //MEM流水线步骤的Stall类型。
+  //      NO_RC_FAIL = 0,           //没有Stall
+  //      BK_CONF,                  //Bank conflict
+  //      MSHR_RC_FAIL,             //MSHR资源冲突
+  //      ICNT_RC_FAIL,             //Interconnect资源冲突
+  //      COAL_STALL,               //Coalescing Stall
+  //      TLB_STALL,                //TLB Stall
+  //      DATA_PORT_STALL,          //数据端口Stall
+  //      WB_ICNT_RC_FAIL,          //Writeback Interconnect资源冲突
+  //      WB_CACHE_RSRV_FAIL,       //Writeback Cache资源冲突
+  //      N_MEM_STAGE_STALL_TYPE    //Stall类型数量
+  //    };
   enum mem_stage_stall_type rc_fail = NO_RC_FAIL;
   mem_stage_access_type type;
   bool done = true;
+  //判断LDST单元访问shared memory是否会Stall。Stall的话返回0，没有Stall的话返回1。
   done &= shared_cycle(pipe_reg, rc_fail, type);
   done &= constant_cycle(pipe_reg, rc_fail, type);
   done &= texture_cycle(pipe_reg, rc_fail, type);
+  //判断LDST单元访问global/local/param memory是否会Stall。Stall的话返回0，没有Stall的话返回1。
   done &= memory_cycle(pipe_reg, rc_fail, type);
   m_mem_rc = rc_fail;
 
+  //如果done为0说明前面发生了Stall。
   if (!done) {  // log stall types and return
     assert(rc_fail != NO_RC_FAIL);
     m_stats->gpgpu_n_stall_shd_mem++;
@@ -3577,10 +3677,13 @@ void ldst_unit::cycle() {
     return;
   }
 
+  //如果前面没有发生Stall且pipe_reg非空。
   if (!pipe_reg.empty()) {
     unsigned warp_id = pipe_reg.warp_id();
+    //如果pipe_reg是load指令。
     if (pipe_reg.is_load()) {
       if (pipe_reg.space.get_type() == shared_space) {
+        //如果pipe_reg是shared memory空间的load指令。
         if (m_pipeline_reg[m_config->smem_latency - 1]->empty()) {
           // new shared memory request
           move_warp(m_pipeline_reg[m_config->smem_latency - 1], m_dispatch_reg);
@@ -3591,13 +3694,14 @@ void ldst_unit::cycle() {
         //    if( !m_operand_collector->writeback(pipe_reg) )
         //        return;
         //}
-
+        //如果pipe_reg是global/local/param memory空间的load指令。
         bool pending_requests = false;
         for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
           unsigned reg_id = pipe_reg.out[r];
           if (reg_id > 0) {
             if (m_pending_writes[warp_id].find(reg_id) !=
                 m_pending_writes[warp_id].end()) {
+              // this instruction has pending register writes
               if (m_pending_writes[warp_id][reg_id] > 0) {
                 pending_requests = true;
                 break;
@@ -3609,6 +3713,7 @@ void ldst_unit::cycle() {
           }
         }
         if (!pending_requests) {
+          //如果该指令没有挂起的写入，则该指令执行完毕。
           m_core->warp_inst_complete(*m_dispatch_reg);
           m_scoreboard->releaseRegisters(m_dispatch_reg);
         }
@@ -3616,6 +3721,7 @@ void ldst_unit::cycle() {
         m_dispatch_reg->clear();
       }
     } else {
+      //如果pipe_reg不是load指令，则执行完毕。
       // stores exit pipeline here
       m_core->dec_inst_in_pipeline(warp_id);
       m_core->warp_inst_complete(*m_dispatch_reg);
