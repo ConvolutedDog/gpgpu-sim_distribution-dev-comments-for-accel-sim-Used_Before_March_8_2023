@@ -1168,10 +1168,27 @@ class inst_t {
   bool is_idiv() const { return ((sp_op == INT_DIV_OP));}   
   bool is_sfu() const {return ((sp_op == FP_SQRT_OP) || (sp_op == FP_LG_OP)  || (sp_op == FP_SIN_OP)  || (sp_op == FP_EXP_OP) || (sp_op == TENSOR__OP));}
   bool is_alu() const {return (sp_op == INT__OP);}
-
+  //在对PTX指令解析的时候，有计算操作数需要的寄存器个数，m_operands在ptx_ir.h的
+  //ptx_instruction类中定义：
+  //    std::vector<operand_info> m_operands;
+  //m_operands会在每条指令解析的时候将所有操作数都添加到其中，例如解析 mad a,b,c 
+  //指令时，会将 a,b,c三个操作数添加进m_operands，即每一条指令对象有一个操作数向
+  //量m_operands。该过程定义为：
+  //     if (!m_operands.empty()) {
+  //       std::vector<operand_info>::iterator it;
+  //       for (it = ++m_operands.begin(); it != m_operands.end(); it++) {
+  //         //操作数数量计数。
+  //         num_operands++;
+  //         //如果操作数是寄存器或者是矢量，num_regs数量加1。
+  //         if ((it->is_reg() || it->is_vector())) {
+  //           num_regs++;
+  //         }
+  //       }
+  //     }
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
   void set_num_regs(unsigned num) { num_regs = num; }
+  //没用到。
   void set_num_operands(unsigned num) { num_operands = num; }
   void set_bar_id(unsigned id) { bar_id = id; }
   void set_bar_count(unsigned count) { bar_count = count; }
