@@ -83,7 +83,9 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
   return mf;
 }
 /////////////////////////////////////////////////////////////////////////////
-
+/*
+获取一条指令中需写回的寄存器编号，以列表方式返回。
+*/
 std::list<unsigned> shader_core_ctx::get_regs_written(const inst_t &fvt) const {
   std::list<unsigned> result;
   for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
@@ -517,6 +519,21 @@ void shader_core_ctx::create_exec_pipeline() {
          m_fu.size() == m_issue_port.size());
 
   // there are as many result buses as the width of the EX_WB stage
+  //结果总线共有m_config->pipe_widths[EX_WB]条。
+  //流水线阶段的宽度配置在-gpgpu_pipeline_widths中设置：
+  // const char *const pipeline_stage_name_decode[] = {
+  //   "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
+  //   "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
+  //   "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
+  //   "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+  // option_parser_register(
+  //   opp, "-gpgpu_pipeline_widths", OPT_CSTR, &pipeline_widths_string,
+  //   "Pipeline widths "
+  //   "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
+  //   "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
+  //   "1,1,1,1,1,1,1,1,1,1,1,1,1");
+  //在V100中配置为：-gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
+  //结果总线的宽度是1，即m_config->pipe_widths[EX_WB] = 8。
   num_result_bus = m_config->pipe_widths[EX_WB];
   for (unsigned i = 0; i < num_result_bus; i++) {
     this->m_result_bus.push_back(new std::bitset<MAX_ALU_LATENCY>());
@@ -2262,7 +2279,27 @@ unsigned shader_core_ctx::translate_local_memaddr(
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
+/*
+This function locates a free slot in all the result buses (the slot is free if its bit 
+is not set).
+此函数在所有结果总线中定位一个空闲插槽（如果未设置其位，则该插槽为空闲插槽）。
+*/
 int shader_core_ctx::test_res_bus(int latency) {
+  //结果总线共有m_config->pipe_widths[EX_WB]条。
+  //流水线阶段的宽度配置在-gpgpu_pipeline_widths中设置：
+  // const char *const pipeline_stage_name_decode[] = {
+  //   "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
+  //   "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
+  //   "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
+  //   "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+  // option_parser_register(
+  //   opp, "-gpgpu_pipeline_widths", OPT_CSTR, &pipeline_widths_string,
+  //   "Pipeline widths "
+  //   "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
+  //   "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
+  //   "1,1,1,1,1,1,1,1,1,1,1,1,1");
+  //在V100中配置为：-gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
+  //结果总线的宽度是1，即num_result_bus = m_config->pipe_widths[EX_WB] = 8。
   for (unsigned i = 0; i < num_result_bus; i++) {
     if (!m_result_bus[i]->test(latency)) {
       return i;
@@ -2272,38 +2309,98 @@ int shader_core_ctx::test_res_bus(int latency) {
 }
 
 /*
-SM的执行。
+SM的执行，各功能单元向前推进一拍。
 */
 void shader_core_ctx::execute() {
+  //结果总线共有m_config->pipe_widths[EX_WB]条。
+  //流水线阶段的宽度配置在-gpgpu_pipeline_widths中设置：
+  // const char *const pipeline_stage_name_decode[] = {
+  //   "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
+  //   "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
+  //   "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
+  //   "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+  // option_parser_register(
+  //   opp, "-gpgpu_pipeline_widths", OPT_CSTR, &pipeline_widths_string,
+  //   "Pipeline widths "
+  //   "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
+  //   "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
+  //   "1,1,1,1,1,1,1,1,1,1,1,1,1");
+  //在V100中配置为：-gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
+  //结果总线的宽度是1，即num_result_bus = m_config->pipe_widths[EX_WB] = 8。
   for (unsigned i = 0; i < num_result_bus; i++) {
     *(m_result_bus[i]) >>= 1;
   }
   for (unsigned n = 0; n < m_num_function_units; n++) {
-    //m_fu是SIMD功能单元的向量。m_fu包含：
+    //m_fu是SIMD功能单元的向量，m_num_function_units是SIMD功能单元的数量。m_fu包含：
     //  4个SP单元，4个DP单元，4个INT单元，4个SFU单元，4个TC单元，多个或零个specialized_unit，
     //  1个LD/ST单元。
+    //在V100配置中，LDST单元以及其他SIMD单元，m_fu[n]->clock_multiplier()均返回1。一些单元，
+    //例如在其他配置文件里，LDST单元可能以更高的时钟频率运行，因此m_fu[n]->clock_multiplier()
+    //可能返回2。这代表在SM的时钟域向前推进一拍时，LDST单元会向前推进两拍。
     unsigned multiplier = m_fu[n]->clock_multiplier();
+    //m_fu[n]单元向前推进一拍。调用pipelined_simd_unit::cycle()，流水线单元向前推进一拍。
     for (unsigned c = 0; c < multiplier; c++) m_fu[n]->cycle();
+    //更新m_state的一些性能计数器。
     m_fu[n]->active_lanes_in_pipeline();
+    //m_issue_port的定义如下：
+    //    for (unsigned k = 0; k < m_config->gpgpu_num_sp_units; k++)
+    //      m_issue_port.push_back(OC_EX_SP);
+    //    for (unsigned k = 0; k < m_config->gpgpu_num_dp_units; k++)
+    //      m_issue_port.push_back(OC_EX_DP);
+    //    for (unsigned k = 0; k < m_config->gpgpu_num_int_units; k++)
+    //      m_issue_port.push_back(OC_EX_INT);
+    //    for (unsigned k = 0; k < m_config->gpgpu_num_sfu_units; k++)
+    //      m_issue_port.push_back(OC_EX_SFU);
+    //    for (unsigned k = 0; k < m_config->gpgpu_num_tensor_core_units; k++)
+    //      m_issue_port.push_back(OC_EX_TENSOR_CORE);
+    //    for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++)
+    //      for (unsigned k = 0; k < m_config->m_specialized_unit[j].num_units; k++)
+    //        m_issue_port.push_back(m_config->m_specialized_unit[j].OC_EX_SPEC_ID);
+    //    m_issue_port.push_back(OC_EX_MEM);
     unsigned issue_port = m_issue_port[n];
+    //根据m_issue_port[n]，获取流水线寄存器m_pipeline_reg[issue_port]中的指令寄存器集合
+    //issue_inst。
     register_set &issue_inst = m_pipeline_reg[issue_port];
     unsigned reg_id;
+    //在V100配置中，partition_issue仅有在LDST单元中为false，其余单元均为true。
     bool partition_issue =
         m_config->sub_core_model && m_fu[n]->is_issue_partitioned();
+    //当partition_issue为false时，reg_id为0。当partition_issue为true时，reg_id为m_fu[n]
+    //->get_issue_reg_id()。这是因为比如说LDST单元仅有一个，其issue_reg_id为0，而其他单元
+    //有多个，所以需要通过get_issue_reg_id()来获取。get_issue_reg_id()其实返回的就是当前
+    //SIMD单元在m_fu中相同类型单元中的索引（例如一共有4个SP单元，当前单元是从零编号开始第3个，
+    //所以该函数就返回的是3）。
     if (partition_issue) {
       reg_id = m_fu[n]->get_issue_reg_id();
     }
+    //返回m_fu[n]单元的流水线寄存器m_pipeline_reg[issue_port]中的指令寄存器集合issue_inst
+    //的第reg_id个。
     warp_inst_t **ready_reg = issue_inst.get_ready(partition_issue, reg_id);
+    //给定一个寄存器reg_id，判断该寄存器是否非空。
     if (issue_inst.has_ready(partition_issue, reg_id) &&
+        //返回**ready_reg指令的return m_dispatch_reg->empty()，即判断m_dispatch_reg是否
+        //为空。
         m_fu[n]->can_issue(**ready_reg)) {
+      //LDST单元返回true，其余返回false。
       bool schedule_wb_now = !m_fu[n]->stallable();
       int resbus = -1;
       if (schedule_wb_now &&
+          //除LDST单元外走这里。
+          //test_res_bus() function locates a free slot in all the result buses (the 
+          //slot is free if its bit is not set).
+          //test_res_bus函数在所有结果总线中定位一个空闲插槽（如果未设置其位，则该插槽为空
+          //闲插槽)。实际上test_res_bus()函数模拟的是指令延迟，但是指令延迟已经在发射阶段
+          //模拟过了，所以这里(*ready_reg)->latency返回的是个固定值1。
           (resbus = test_res_bus((*ready_reg)->latency)) != -1) {
         assert((*ready_reg)->latency < MAX_ALU_LATENCY);
+        //m_result_bus实际上是模拟指令延迟，但是指令延迟已经在发射阶段模拟过了，所以这里
+        //(*ready_reg)->latency返回的是个固定值1，因此这里始终执行的是：
+        //    m_result_bus[resbus]->set(1)。
         m_result_bus[resbus]->set((*ready_reg)->latency);
+        //执行simd_function_unit::issue(register_set &source_reg)函数。
         m_fu[n]->issue(issue_inst);
       } else if (!schedule_wb_now) {
+        //LDST单元走这里。
         m_fu[n]->issue(issue_inst);
       } else {
         // stall issue (cannot reserve result bus)
@@ -2360,7 +2457,9 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
 }
 
 /*
-流水线的写回阶段。将执行阶段的结果写回到寄存器文件中。
+流水线的写回阶段。将执行阶段的结果写回到寄存器文件中。首先，EX_WB寄存器组中的就绪槽被识别并加
+载到preg。如果有效，则调用m_operated_collector.writeback。然后，目标寄存器从记分板上释放，
+EX_WB寄存器集中的插槽被清除。它一直持续到EX_WB寄存器集中的所有就绪指令都被写回为止。
 */
 void shader_core_ctx::writeback() {
   unsigned max_committed_thread_instructions =
@@ -2374,14 +2473,19 @@ void shader_core_ctx::writeback() {
   m_stats->m_last_num_sim_insn[m_sid] = m_stats->m_num_sim_insn[m_sid];
   m_stats->m_last_num_sim_winsn[m_sid] = m_stats->m_num_sim_winsn[m_sid];
 
+  //get_ready()获取一个非空寄存器，将其指令移出，并返回这条指令。
   warp_inst_t **preg = m_pipeline_reg[EX_WB].get_ready();
   warp_inst_t *pipe_reg = (preg == NULL) ? NULL : *preg;
+  
   while (preg and !pipe_reg->empty()) {
     /*
      * Right now, the writeback stage drains all waiting instructions
      * assuming there are enough ports in the register file or the
      * conflicts are resolved at issue.
      */
+    /*
+    现在，写回阶段会耗尽所有等待的指令，假设寄存器文件中有足够的端口，或者冲突已经解决。
+    */
     /*
      * The operand collector writeback can generally generate a stall
      * However, here, the pipelines should be un-stallable. This is
@@ -2393,9 +2497,17 @@ void shader_core_ctx::writeback() {
      * To handle this case, we ignore the return value (thus allowing
      * no stalling).
      */
-
+    /*
+    操作数收集器写回通常会生成暂停。然而，在这里，流水线应该是un-stallable的。这是有保
+    证的，因为这是在操作数收集器的步骤函数之后首次调用写回函数，该函数重置分配。有一种情
+    况可能导致写回函数返回false（stall），即指令试图修改两个寄存器（GPR和谓词）。为了处
+    理这种情况，我们忽略返回值（因此不允许停滞）。
+    */
+    //操作数收集器的Bank写回.
     m_operand_collector.writeback(*pipe_reg);
+    //获取pipe_reg指令的warp ID。
     unsigned warp_id = pipe_reg->warp_id();
+    // release the register from the scoreboard.
     m_scoreboard->releaseRegisters(pipe_reg);
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
@@ -2404,6 +2516,7 @@ void shader_core_ctx::writeback() {
     m_last_inst_gpu_sim_cycle = m_gpu->gpu_sim_cycle;
     m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
     pipe_reg->clear();
+    //循环下一个流水线寄存器集合m_pipeline_reg[EX_WB]中的有效指令寄存器，执行它的停止任务。
     preg = m_pipeline_reg[EX_WB].get_ready();
     pipe_reg = (preg == NULL) ? NULL : *preg;
   }
@@ -2788,6 +2901,9 @@ void simd_function_unit::issue(register_set &source_reg) {
   occupied.set(m_dispatch_reg->latency);
 }
 
+/*
+SFU特殊功能单元的构造函数。仅m_name不同。
+*/
 sfu::sfu(register_set *result_port, const shader_core_config *config,
          shader_core_ctx *core, unsigned issue_reg_id)
     : pipelined_simd_unit(result_port, config, config->max_sfu_latency, core,
@@ -2795,6 +2911,9 @@ sfu::sfu(register_set *result_port, const shader_core_config *config,
   m_name = "SFU";
 }
 
+/*
+Tensor Core单元的构造函数。仅m_name不同。
+*/
 tensor_core::tensor_core(register_set *result_port,
                          const shader_core_config *config,
                          shader_core_ctx *core, unsigned issue_reg_id)
@@ -2803,6 +2922,9 @@ tensor_core::tensor_core(register_set *result_port,
   m_name = "TENSOR_CORE";
 }
 
+/*
+SFU特殊功能单元的发射函数。
+*/
 void sfu::issue(register_set &source_reg) {
   warp_inst_t **ready_reg =
       source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
@@ -2813,6 +2935,9 @@ void sfu::issue(register_set &source_reg) {
   pipelined_simd_unit::issue(source_reg);
 }
 
+/*
+Tensor Core单元的发射函数。
+*/
 void tensor_core::issue(register_set &source_reg) {
   warp_inst_t **ready_reg =
       source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
@@ -2890,6 +3015,9 @@ void tensor_core::active_lanes_in_pipeline() {
   m_core->incfumemactivelanes_stat(active_count);
 }
 
+/*
+SP单元的构造函数。仅m_name不同。
+*/
 sp_unit::sp_unit(register_set *result_port, const shader_core_config *config,
                  shader_core_ctx *core, unsigned issue_reg_id)
     : pipelined_simd_unit(result_port, config, config->max_sp_latency, core,
@@ -2907,6 +3035,9 @@ specialized_unit::specialized_unit(register_set *result_port,
   m_supported_op = supported_op;
 }
 
+/*
+DP单元的构造函数。仅m_name不同。
+*/
 dp_unit::dp_unit(register_set *result_port, const shader_core_config *config,
                  shader_core_ctx *core, unsigned issue_reg_id)
     : pipelined_simd_unit(result_port, config, config->max_dp_latency, core,
@@ -2914,6 +3045,9 @@ dp_unit::dp_unit(register_set *result_port, const shader_core_config *config,
   m_name = "DP ";
 }
 
+/*
+INT单元的构造函数。仅m_name不同。
+*/
 int_unit::int_unit(register_set *result_port, const shader_core_config *config,
                    shader_core_ctx *core, unsigned issue_reg_id)
     : pipelined_simd_unit(result_port, config, config->max_int_latency, core,
@@ -3165,6 +3299,9 @@ void ldst_unit::issue(register_set &reg_set) {
   pipelined_simd_unit::issue(reg_set);
 }
 
+/*
+LDST单元的写回操作。
+*/
 void ldst_unit::writeback() {
   // process next instruction that is going to writeback
   if (!m_next_wb.empty()) {
@@ -3265,14 +3402,19 @@ void ldst_unit::writeback() {
   }
 }
 
+//时钟倍增器：一些单元可能在更高的循环速率下运行。
 unsigned ldst_unit::clock_multiplier() const {
   // to model multiple read port, we give multiple cycles for the memory units
+  //在V100配置中，m_config->mem_unit_ports默认为1。
   if (m_config->mem_unit_ports)
     return m_config->mem_unit_ports;
   else
     return m_config->mem_warp_parts;
 }
 
+/*
+LDST单元向前推进一拍。
+*/
 void ldst_unit::cycle() {
   writeback();
   //for (int i = 0; i < m_config->reg_file_port_throughput; ++i)
@@ -5011,8 +5153,13 @@ int register_bank(int regnum, int wid, unsigned num_banks,
     return bank % num_banks;
 }
 
+/*
+操作数收集器的Bank写回。
+*/
 bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
   assert(!inst.empty());
+  //m_shader->get_regs_written(inst)获取一条指令inst中需写回的寄存器编号，以列表方
+  //式返回。
   std::list<unsigned> regs = m_shader->get_regs_written(inst);
   for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
     int reg_num = inst.arch_reg.dst[op];  // this math needs to match that used
@@ -5023,6 +5170,7 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
                                     m_bank_warp_shift, sub_core_model,
                                     m_num_banks_per_sched, inst.get_schd_id());
       if (m_arbiter.bank_idle(bank)) {
+        //写回到寄存器Bank。
         //m_bank_warp_shift被初始化为5。
         m_arbiter.allocate_bank_for_write(
             bank,
@@ -5035,6 +5183,7 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
     }
   }
   for (unsigned i = 0; i < (unsigned)regs.size(); i++) {
+    //在V100配置中，gpgpu_clock_gated_reg_file默认为0。
     if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
       unsigned active_count = 0;
       for (unsigned i = 0; i < m_shader->get_config()->warp_size;
@@ -5049,6 +5198,7 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
       }
       m_shader->incregfile_writes(active_count);
     } else {
+      //增加寄存器写回数目为warp_size。m_shader->get_config()->warp_size为32。
       m_shader->incregfile_writes(
           m_shader->get_config()->warp_size);  // inst.active_count());
     }
