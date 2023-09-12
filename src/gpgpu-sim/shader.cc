@@ -2473,7 +2473,7 @@ void shader_core_ctx::writeback() {
   m_stats->m_last_num_sim_insn[m_sid] = m_stats->m_num_sim_insn[m_sid];
   m_stats->m_last_num_sim_winsn[m_sid] = m_stats->m_num_sim_winsn[m_sid];
 
-  //get_ready()获取一个非空寄存器，将其指令移出，并返回这条指令。
+  //get_ready()从EX_WB流水线寄存器获取一个非空寄存器，将其指令移出，并返回这条指令。
   warp_inst_t **preg = m_pipeline_reg[EX_WB].get_ready();
   warp_inst_t *pipe_reg = (preg == NULL) ? NULL : *preg;
   
@@ -2503,7 +2503,7 @@ void shader_core_ctx::writeback() {
     况可能导致写回函数返回false（stall），即指令试图修改两个寄存器（GPR和谓词）。为了处
     理这种情况，我们忽略返回值（因此不允许停滞）。
     */
-    //操作数收集器的Bank写回.
+    //操作数收集器的Bank写回。
     m_operand_collector.writeback(*pipe_reg);
     //获取pipe_reg指令的warp ID。
     unsigned warp_id = pipe_reg->warp_id();
@@ -2795,8 +2795,11 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
   mem_stage_stall_type stall_cond = NO_RC_FAIL;
   const mem_access_t &access = inst.accessq_back();
 
+  //bypassL1D是指代数据访问是否绕过L1数据缓存。
   bool bypassL1D = false;
   if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
+    //CACHE_GLOBAL==.cg，Cache at global level，全局级缓存（L2及以下缓存，而不是L1）。使用ld.cg全局性
+    //地加载，绕过L1缓存，并仅缓存在L2缓存中。
     bypassL1D = true;
   } else if (inst.space.is_global()) {  // global memory access
     // skip L1 cache if the option is enabled
@@ -3275,27 +3278,42 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
        mem_config, stats, sid, tpc);
 }
 
+/*
+LDST单元issue函数。
+*/
 void ldst_unit::issue(register_set &reg_set) {
+  //从寄存器集合reg_set中获取一个非空寄存器，将其inst指令移出，并返回这条指令。
   warp_inst_t *inst = *(reg_set.get_ready());
 
   // record how many pending register writes/memory accesses there are for this
   // instruction
+  //记录该指令有多少个挂起的寄存器写入/内存访问。
   assert(inst->empty() == false);
+  //如果该指令是load指令，并且该指令的空间类型不是共享内存空间。
   if (inst->is_load() and inst->space.get_type() != shared_space) {
+    //该指令的warp_id。
     unsigned warp_id = inst->warp_id();
+    //该指令的访存次数。inst->accessq_count() = m_accessq.size()，其中m_accessq是当前指令的访存操作的
+    //列表。
     unsigned n_accesses = inst->accessq_count();
+    //对该条指令的所有目的寄存器循环。
     for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+      //该条指令的目的寄存器ID。inst->out记录了当前指令的所有目的操作数寄存器ID。
       unsigned reg_id = inst->out[r];
       if (reg_id > 0) {
+        //m_pending_writes是一个二维数组，第一维索引是warp_id，第二维索引是寄存器ID，值是该寄存器ID对应
+        //的寄存器挂起的写入次数。该指令的目的寄存器ID对应的m_pending_writes表项的挂起的写入次数加上该指
+        //令的写次数。
         m_pending_writes[warp_id][reg_id] += n_accesses;
       }
     }
   }
-
+  //inst->op_pipe是操作码code(uarch可见)，标识操作的流水线(SP、SFU或MEM)。
   inst->op_pipe = MEM__OP;
   // stat collection
   m_core->mem_instruction_stats(*inst);
   m_core->incmem_stat(m_core->get_config()->warp_size, 1);
+  //LDST单元流水线单元向前推进一拍。
   pipelined_simd_unit::issue(reg_set);
 }
 
@@ -3304,28 +3322,42 @@ LDST单元的写回操作。
 */
 void ldst_unit::writeback() {
   // process next instruction that is going to writeback
+  //下一条需要写回的指令。
   if (!m_next_wb.empty()) {
+    //操作数收集器的Bank写回，返回true；Bank冲突时返回false。
     if (m_operand_collector->writeback(m_next_wb)) {
       bool insn_completed = false;
+      //对该条指令m_next_wb的所有目的寄存器循环。
       for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
         if (m_next_wb.out[r] > 0) {
+          //检查指令写回的地址是否是共享内存空间。
           if (m_next_wb.space.get_type() != shared_space) {
+            //指令写回的地址不是共享内存空间。
             assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] > 0);
+            //这里的m_pending_writes是一个二维数组，第一维索引是warp_id，第二维索引是寄存器ID，值是该寄
+            //存器ID对应的寄存器挂起的写入次数。由于这里执行了操作数收集器的写回操作，m_next_wb所在warp下
+            //该寄存器ID对应的寄存器挂起的写入次数减1。still_pending则是在当前写回执行完毕后，m_next_wb
+            //所在warp下该寄存器ID对应的寄存器挂起的写入次数。
             unsigned still_pending =
                 --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
+            //如果该挂起写入次数已经减为0，则说明已经没有挂起的写入，该寄存器所在的m_pending_writes中的表
+            //项可以被释放，该寄存器也应该从计分板中释放。
             if (!still_pending) {
               m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
               m_scoreboard->releaseRegister(m_next_wb.warp_id(),
                                             m_next_wb.out[r]);
+              //设置指令已完成。
               insn_completed = true;
             }
           } else {  // shared
+            //指令写回的地址是共享内存空间，没有寄存器参与，这时候直接从计分板中释放该寄存器即可。
             m_scoreboard->releaseRegister(m_next_wb.warp_id(),
                                           m_next_wb.out[r]);
             insn_completed = true;
           }
         }
       }
+      //如果操作数收集器的写回操作完成，代表当前指令已经完成。
       if (insn_completed) {
         m_core->warp_inst_complete(m_next_wb);
       }
@@ -3336,11 +3368,20 @@ void ldst_unit::writeback() {
   }
 
   unsigned serviced_client = -1;
+  //m_num_writeback_clients = 5：
+  //  next_client=0：shared memory,
+  //  next_client=1：L1T,   
+  //  next_client=2：L1C,
+  //  next_client=3：global/local (uncached), 
+  //  next_client=4：L1D。
+  //下面是获取下一个需要写回的指令。这里轮询查找上述5个client，从中选择一条需写回的指令。
   for (unsigned c = 0; m_next_wb.empty() && (c < m_num_writeback_clients);
        c++) {
+    //m_writeback_arb是一个计数器，用于轮询查找下一个需要写回的指令。下一个查找的单元是next_client。
     unsigned next_client = (c + m_writeback_arb) % m_num_writeback_clients;
     switch (next_client) {
       case 0:  // shared memory
+        //直接判断流水线寄存器即可。
         if (!m_pipeline_reg[0]->empty()) {
           m_next_wb = *m_pipeline_reg[0];
           if (m_next_wb.isatomic()) {
@@ -3355,6 +3396,7 @@ void ldst_unit::writeback() {
         break;
       case 1:  // texture response
         if (m_L1T->access_ready()) {
+          //获取下一个访问的纹理指令。
           mem_fetch *mf = m_L1T->next_access();
           m_next_wb = mf->get_inst();
           delete mf;
@@ -3363,6 +3405,7 @@ void ldst_unit::writeback() {
         break;
       case 2:  // const cache response
         if (m_L1C->access_ready()) {
+          //获取下一个访问的常量缓存指令。
           mem_fetch *mf = m_L1C->next_access();
           m_next_wb = mf->get_inst();
           delete mf;
@@ -3371,6 +3414,7 @@ void ldst_unit::writeback() {
         break;
       case 3:  // global/local
         if (m_next_global) {
+          //获取下一个访问的全局内存指令。
           m_next_wb = m_next_global->get_inst();
           if (m_next_global->isatomic()) {
             m_core->decrement_atomic_count(
@@ -3384,6 +3428,7 @@ void ldst_unit::writeback() {
         break;
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
+          //获取下一个访问的数据缓存指令。
           mem_fetch *mf = m_L1D->next_access();
           m_next_wb = mf->get_inst();
           delete mf;
@@ -3416,22 +3461,30 @@ unsigned ldst_unit::clock_multiplier() const {
 LDST单元向前推进一拍。
 */
 void ldst_unit::cycle() {
+  //LDST单元的写回操作。
   writeback();
   //for (int i = 0; i < m_config->reg_file_port_throughput; ++i)
   //  m_operand_collector->step();
+  //m_pipeline_reg是一个数组，该数组的大小模拟流水线的深度m_pipeline_depth，每个元素是一个warp_inst_t类
+  //型的指针。这里是m_pipeline_reg流水线寄存器集中的所有指令向前推进一槽，模拟一拍的执行。
   for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
 
+  //如果SIMT Core集群的数据响应FIFO不为空。
   if (!m_response_fifo.empty()) {
+    //获取FIFO中的第一个mem_fetch指针。
     mem_fetch *mf = m_response_fifo.front();
     if (mf->get_access_type() == TEXTURE_ACC_R) {
+      //如果该访存mem是纹理访存读，则判断纹理缓存是否有空闲的填充端口。
       if (m_L1T->fill_port_free()) {
+        //如果存在空闲的填充端口，则将该mem_fetch指针mf中的指令移入纹理缓存。
         m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
                             m_core->get_gpu()->gpu_tot_sim_cycle);
         m_response_fifo.pop_front();
       }
     } else if (mf->get_access_type() == CONST_ACC_R) {
+      //如果该访存mem是常量访存读，则判断常量缓存是否有空闲的填充端口。
       if (m_L1C->fill_port_free()) {
         mf->set_status(IN_SHADER_FETCHED,
                        m_core->get_gpu()->gpu_sim_cycle +
@@ -3441,25 +3494,43 @@ void ldst_unit::cycle() {
         m_response_fifo.pop_front();
       }
     } else {
+      //mf->get_type()返回的可能类型：
+      //    enum mf_type {
+      //      READ_REQUEST = 0,
+      //      WRITE_REQUEST,
+      //      READ_REPLY,  // send to shader
+      //      WRITE_ACK
+      //    };
       if (mf->get_type() == WRITE_ACK ||
+          //m_config->gpgpu_perfect_mem在V100配置中默认为0。
           (m_config->gpgpu_perfect_mem && mf->get_is_write())) {
+        //如果该访存mem是写响应，执行Shader Core（SM）对写确认的动作，减少mf所属warp的已发送但尚未收到
+        //写确认的存储请求数。
         m_core->store_ack(mf);
         m_response_fifo.pop_front();
         delete mf;
       } else {
+        //如果该访存mem不是写响应，则是READ_REQUEST，WRITE_REQUEST或READ_REPLY。
         assert(!mf->get_is_write());  // L1 cache is write evict, allocate line
                                       // on load miss only
 
+        //bypassL1D是指代数据访问是否绕过L1数据缓存。
         bool bypassL1D = false;
         if (CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
+          //CACHE_GLOBAL==.cg，Cache at global level，全局级缓存（L2及以下缓存，而不是L1）。使用ld.cg
+          //全局性地加载，绕过L1缓存，并仅缓存在L2缓存中。
           bypassL1D = true;
         } else if (mf->get_access_type() == GLOBAL_ACC_R ||
                    mf->get_access_type() ==
                        GLOBAL_ACC_W) {  // global memory access
+          //在V100配置中，gpgpu_gmem_skip_L1D设置为0。
           if (m_core->get_config()->gmem_skip_L1D) bypassL1D = true;
         }
+        //所以只有在使用ld.cg时才会绕过L1数据缓存。
         if (bypassL1D) {
           if (m_next_global == NULL) {
+            //m_next_global是下一次访问全局存储的mf，如果它空闲，则m_next_global = mf，空闲的话就无法
+            //继续放出该次访问。
             mf->set_status(IN_SHADER_FETCHED,
                            m_core->get_gpu()->gpu_sim_cycle +
                                m_core->get_gpu()->gpu_tot_sim_cycle);
@@ -3467,6 +3538,7 @@ void ldst_unit::cycle() {
             m_next_global = mf;
           }
         } else {
+          //如果不绕过L1数据缓存，就需要将mf写入L1数据缓存的端口。
           if (m_L1D->fill_port_free()) {
             m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
                                 m_core->get_gpu()->gpu_tot_sim_cycle);
@@ -3477,10 +3549,14 @@ void ldst_unit::cycle() {
     }
   }
 
+  //L1纹理缓存向前推进一拍。
   m_L1T->cycle();
+  //L1常量缓存向前推进一拍。
   m_L1C->cycle();
   if (m_L1D) {
+    //L1数据缓存向前推进一拍。
     m_L1D->cycle();
+    //在V100中，m_config->m_L1D_config.l1_latency被配置为20拍，指的是L1数据缓存命中时的访问拍数。
     if (m_config->m_L1D_config.l1_latency > 0) L1_latency_queue_cycle();
   }
 
@@ -4764,10 +4840,14 @@ void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
   m_ldst_unit->fill(mf);
 }
 
+/*
+Shader Core（SM）对写确认的动作，减少mf所属warp的已发送但尚未收到写确认的存储请求数。
+*/
 void shader_core_ctx::store_ack(class mem_fetch *mf) {
   assert(mf->get_type() == WRITE_ACK ||
          (m_config->gpgpu_perfect_mem && mf->get_is_write()));
   unsigned warp_id = mf->get_wid();
+  //减少已发送但尚未收到写确认的存储请求数。
   m_warp[warp_id]->dec_store_req();
 }
 
@@ -5604,7 +5684,8 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
   m_output_register->move_in(m_sub_core_model, m_reg_id, m_warp);
   //重置当前收集器单元为空闲状态。
   m_free = true;
-  //????
+  //经过收集器单元收集完源操作数后，将原先暂存在收集器单元指令槽m_warp中的指令推出到
+  //m_output_register中。
   m_output_register = NULL;
   //重置当前收集器单元的源操作数为空。
   for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) m_src_op[i].reset();
