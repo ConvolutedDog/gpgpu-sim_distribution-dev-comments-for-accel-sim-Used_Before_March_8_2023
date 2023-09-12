@@ -742,6 +742,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   for (unsigned j = 0; j < SPECIALIZED_UNIT_NUM; ++j) {
     std::stringstream ss;
     ss << "-specialized_unit_" << j + 1;
+    //-specialized_unit_1 0,4,4,4,4,BRA
+    //-specialized_unit_2 0,4,4,4,4,BRA
+    //-specialized_unit_3 0,4,4,4,4,BRA
+    //-specialized_unit_4 0,4,4,4,4,BRA
+    //-specialized_unit_5 0,4,4,4,4,BRA
+    //-specialized_unit_6 0,4,4,4,4,BRA
+    //-specialized_unit_7 0,4,4,4,4,BRA
+    //-specialized_unit_8 0,4,4,4,4,BRA
     option_parser_register(opp, ss.str().c_str(), OPT_CSTR,
                            &specialized_unit_string[j],
                            "specialized unit config"
