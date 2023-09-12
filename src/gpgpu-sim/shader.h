@@ -1680,10 +1680,15 @@ class pipelined_simd_unit : public simd_function_unit {
   unsigned active_insts_in_pipeline;
 };
 
+/*
+特殊功能单元的定义。
+*/
 class sfu : public pipelined_simd_unit {
  public:
+  //SFU特殊功能单元的构造函数。仅m_name不同。
   sfu(register_set *result_port, const shader_core_config *config,
       shader_core_ctx *core, unsigned issue_reg_id);
+  //仅操作码为SFU_OP/ALU_SFU_OP以及对计算能力小于29的DP_OP(compute <= 29)才会发射到SFU。
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case SFU_OP:
@@ -1702,10 +1707,14 @@ class sfu : public pipelined_simd_unit {
   bool is_issue_partitioned() { return true; }
 };
 
+/*
+DP单元的定义。
+*/
 class dp_unit : public pipelined_simd_unit {
  public:
   dp_unit(register_set *result_port, const shader_core_config *config,
           shader_core_ctx *core, unsigned issue_reg_id);
+  //仅操作码为DP_OP才会发射到SFU。
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case DP_OP:
@@ -1862,6 +1871,7 @@ class ldst_unit : public pipelined_simd_unit {
   void writeback();
 
   // accessors
+  //时钟倍增器：一些单元可能在更高的循环速率下运行。
   virtual unsigned clock_multiplier() const;
 
   virtual bool can_issue(const warp_inst_t &inst) const {
@@ -1965,6 +1975,9 @@ class ldst_unit : public pipelined_simd_unit {
   void L1_latency_queue_cycle();
 };
 
+/*
+流水线阶段名。N_PIPELINE_STAGES正好是阶段的总个数。
+*/
 enum pipeline_stage_name_t {
   ID_OC_SP = 0,
   ID_OC_DP,
@@ -1982,12 +1995,19 @@ enum pipeline_stage_name_t {
   N_PIPELINE_STAGES
 };
 
+/*
+流水线阶段名。N_PIPELINE_STAGES正好是阶段的总个数。
+*/
 const char *const pipeline_stage_name_decode[] = {
     "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
     "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
     "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
     "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
 
+/*
+除SP/DP/INT/TC/MEM/SFU等单元外的奇特具体工作单元的信息在这里指定。其总数量由SPECIALIZED_UNIT_NUM
+指定。
+*/
 struct specialized_unit_params {
   unsigned latency;
   unsigned num_units;
@@ -2033,6 +2053,18 @@ class shader_core_config : public core_config {
 
     for (int i = 0; i < num_config_to_read; i++) {
       assert(toks);
+      //这里读取的是以下流水线阶段的宽度，该配置在-gpgpu_pipeline_widths中设置：
+      // const char *const pipeline_stage_name_decode[] = {
+      //   "ID_OC_SP",          "ID_OC_DP",         "ID_OC_INT", "ID_OC_SFU",
+      //   "ID_OC_MEM",         "OC_EX_SP",         "OC_EX_DP",  "OC_EX_INT",
+      //   "OC_EX_SFU",         "OC_EX_MEM",        "EX_WB",     "ID_OC_TENSOR_CORE",
+      //   "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
+      // option_parser_register(
+      //   opp, "-gpgpu_pipeline_widths", OPT_CSTR, &pipeline_widths_string,
+      //   "Pipeline widths "
+      //   "ID_OC_SP,ID_OC_DP,ID_OC_INT,ID_OC_SFU,ID_OC_MEM,OC_EX_SP,OC_EX_DP,OC_EX_"
+      //   "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
+      //   "1,1,1,1,1,1,1,1,1,1,1,1,1");
       ntok = sscanf(toks, "%d", &pipe_widths[i]);
       assert(ntok == 1);
       toks = strtok(NULL, ",");
@@ -2178,7 +2210,8 @@ class shader_core_config : public core_config {
   int gpgpu_num_int_units;
 
   // Shader core resources
-  //每个Shader Core的寄存器数。并发CTA的限制因素之一。由GPGPU-Sim的-gpgpu_shader_registers选项配置。
+  //每个Shader Core的寄存器数。并发CTA的限制因素之一。由GPGPU-Sim的-gpgpu_shader_registers选项
+  //配置。
   unsigned gpgpu_shader_registers;
   int gpgpu_warpdistro_shader;
   int gpgpu_warp_issue_shader;
@@ -3060,6 +3093,9 @@ class shader_core_ctx : public core_t {
       m_fu;  // stallable pipelines should be last in this array
   ldst_unit *m_ldst_unit;
   static const unsigned MAX_ALU_LATENCY = 512;
+  // there are as many result buses as the width of the EX_WB stage
+  //结果总线共有m_config->pipe_widths[EX_WB]条。
+  //    num_result_bus = m_config->pipe_widths[EX_WB];
   unsigned num_result_bus;
   std::vector<std::bitset<MAX_ALU_LATENCY> *> m_result_bus;
 
