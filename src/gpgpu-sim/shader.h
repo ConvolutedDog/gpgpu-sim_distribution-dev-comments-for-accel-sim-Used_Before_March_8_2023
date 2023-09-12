@@ -272,7 +272,7 @@ class shd_warp_t {
   bool stores_done() const { return m_stores_outstanding == 0; }
   //增加已发送但尚未确认的存储请求数。
   void inc_store_req() { m_stores_outstanding++; }
-  //减少已发送但尚未确认的存储请求数。
+  //减少已发送但尚未收到写确认的存储请求数。
   void dec_store_req() {
     assert(m_stores_outstanding > 0);
     m_stores_outstanding--;
@@ -1861,6 +1861,7 @@ class ldst_unit : public pipelined_simd_unit {
             unsigned sid, unsigned tpc);
 
   // modifiers
+  //LDST单元issue函数。
   virtual void issue(register_set &inst);
   bool is_issue_partitioned() { return false; }
   virtual void cycle();
@@ -1958,6 +1959,7 @@ class ldst_unit : public pipelined_simd_unit {
   Scoreboard *m_scoreboard;
 
   mem_fetch *m_next_global;
+  //下一条需要写回的指令。
   warp_inst_t m_next_wb;
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
