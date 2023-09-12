@@ -910,6 +910,39 @@ MEM_ACCESS_TYPE_TUP_DEF
 
 const char *mem_access_type_str(enum mem_access_type access_type);
 
+/*
+缓存运算符的类型。
+PTX ISA 2.0版在加载和存储指令上引入了可选的缓存运算符。缓存运算符需要sm_20或更高的目标体系结构。加
+载或存储指令上的缓存运算符仅被视为性能提示。对ld或st指令使用缓存运算符不会改变程序的内存一致性行为。
+对于sm_20及更高版本，缓存运算符具有以下定义和行为：
+1. 内存Load指令的缓存运算符：
+ .ca: Cache at all levels，所有级别的缓存，可能会再次访问。
+      默认的Loaf指令缓存操作是ld.ca，它使用正常的逐出策略在所有级别（L1和L2）中分配缓存线。全局数
+      据在L2级是一致的，但多个L1缓存对于全局数据来说是不一致的。如果一个线程通过一个L1缓存存储到全
+      局内存，而第二个线程通过第二个L1缓存加载该地址，并使用ld.ca，则第二个可能会得到过时的L1缓存
+      数据，而不是第一个线程存储的数据。驱动程序必须使并行线程的从属网格之间的全局L1缓存线无效。然
+      后，第一个网格程序的存储由第二个网格程序正确获取，该程序发出L1中缓存的默认ld.ca加载。
+ .cg  Cache at global level，全局级缓存（L2及以下缓存，而不是L1）。
+      使用ld.cg全局性地加载，绕过L1缓存，并仅缓存在L2缓存中。
+ .cs  Cache streaming，缓存流，可能会被访问一次。
+      ld.cs加载缓存的流操作在L1和L2分配全局行，采用驱逐优先的策略在L1和L2分配全局行，以限制临时流
+      数据对缓存污染，这些数据可能被访问一次或两次。当ld.cs被应用到一个本地窗口地址时，它执行ld.lu
+      操作。
+ .lu  Last use。
+      编译器/程序员在恢复溢出的寄存器和弹出函数堆栈框架时可以使用ld.lu，以避免不必要的写回不会再使
+      用的行。ld.lu指令在全局地址上执行一个加载缓存的流操作（ld.cs）。
+ .cv  不要再次缓存和获取（考虑缓存的系统内存线已过时，再次获取）。应用于全局系统内存地址的ld.cv加载
+      操作使匹配的L2行无效（丢弃），并在每次新加载时重新获取该行。
+2. 内存Store指令的缓存运算符：
+ .wb  Cache write-back all coherent levels，缓存写回所有级别一致。
+      默认的存储指令缓存操作是st.wb，它使用正常的逐出策略写回一致缓存级别的缓存行。如果一个线程绕过
+      其L1缓存存储到全局内存，而另一个SM中的第二个线程稍后通过具有ld.ca的不同L1缓存从该地址加载，则
+      第二个可能会命中过时的L1缓存数据，而不是从第一个线程存储的L2或内存中获取数据。驱动程序必须使线
+      程阵列的从属网格之间的全局L1缓存线无效。然后，第一个网格程序的存储在L1中正确丢失，并由发出默认
+      ld.ca加载的第二个网格程序获取。
+ .wt  Cache write-through (to system memory).
+      st.wt存储写入操作应用于通过二级缓存写入的全局系统内存地址。
+*/
 enum cache_operator_type {
   CACHE_UNDEFINED,
 
@@ -1206,6 +1239,7 @@ class inst_t {
                                  // operation is an interger or a floating point
   special_ops
       sp_op;  // code (uarch visible) identify if int_alu, fp_alu, int_mul ....
+  //操作码code(uarch可见)，标识操作的流水线(SP、SFU或MEM)。
   operation_pipeline op_pipe;  // code (uarch visible) identify the pipeline of
                                // the operation (SP, SFU or MEM)
   mem_operation mem_op;        // code (uarch visible) identify memory type
@@ -1217,9 +1251,13 @@ class inst_t {
   address_type reconvergence_pc;  // -1 => not a branch, -2 => use function
                                   // return address
 
+  //记录了当前指令的所有目的操作数寄存器ID。
   unsigned out[8];
+  //记录了当前指令的所有目的操作数寄存器总数。
   unsigned outcount;
+  //记录了当前指令的所有源操作数寄存器ID。
   unsigned in[24];
+  //记录了当前指令的所有源操作数寄存器总数。
   unsigned incount;
   unsigned char is_vectorin;
   unsigned char is_vectorout;
