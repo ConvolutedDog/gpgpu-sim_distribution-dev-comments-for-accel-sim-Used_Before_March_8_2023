@@ -125,7 +125,7 @@ class mem_fetch {
   unsigned get_wid() const { return m_wid; }
   bool istexture() const;
   bool isconst() const;
-  //返回对存储器进行的访存类型，
+  //返回对存储器进行的访存类型。
   enum mf_type get_type() const { return m_type; }
   bool isatomic() const;
 
