@@ -3136,6 +3136,7 @@ class exec_shader_core_ctx : public shader_core_ctx {
       : shader_core_ctx(gpu, cluster, shader_id, tpc_id, config, mem_config,
                         stats) {
     create_front_pipeline();
+    //为当前SM创建所有的warp，warp的数量是m_config->max_warps_per_shader确定。
     create_shd_warp();
     create_schedulers();
     create_exec_pipeline();
@@ -3150,6 +3151,7 @@ class exec_shader_core_ctx : public shader_core_ctx {
                                    unsigned num_threads, core_t *core,
                                    unsigned hw_cta_id, unsigned hw_warp_id,
                                    gpgpu_t *gpu);
+  //为当前SM创建所有的warp，warp的数量是m_config->max_warps_per_shader确定。
   virtual void create_shd_warp();
   virtual const warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
   virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
@@ -3249,15 +3251,20 @@ class exec_simt_core_cluster : public simt_core_cluster {
   virtual void create_shader_core_ctx();
 };
 
+/*
+SM和存储之间的接口。
+*/
 class shader_memory_interface : public mem_fetch_interface {
  public:
   shader_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
     m_core = core;
     m_cluster = cluster;
   }
+  //返回true，如果ICNT的注入缓冲区已满。
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->icnt_injection_buffer_full(size, write);
   }
+  //将内存请求包推入ICNT的注入缓冲区。
   virtual void push(mem_fetch *mf) {
     m_core->inc_simt_to_mem(mf->get_num_flits(true));
     m_cluster->icnt_inject_request_packet(mf);
