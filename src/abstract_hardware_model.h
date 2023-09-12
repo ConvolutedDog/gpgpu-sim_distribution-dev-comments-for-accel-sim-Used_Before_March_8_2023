@@ -1460,16 +1460,22 @@ class warp_inst_t : public inst_t {
 
   unsigned warp_size() const { return m_config->warp_size; }
 
+  //返回当前指令的访存操作的列表是否为空。
   bool accessq_empty() const { return m_accessq.empty(); }
+  //返回当前指令的访存操作的列表的大小。
   unsigned accessq_count() const { return m_accessq.size(); }
+  //返回当前指令的访存操作的列表的表尾元素。
   const mem_access_t &accessq_back() { return m_accessq.back(); }
+  //弹出当前指令的访存操作的列表的表尾元素。
   void accessq_pop_back() { m_accessq.pop_back(); }
 
+  //初始化时设置为cycles = initiation_interval;，每次调用dispatch_delay()时，cycles减1，直到cycles=0。
   bool dispatch_delay() {
     if (cycles > 0) cycles--;
     return cycles > 0;
   }
 
+  //返回该条指令还剩下多少initiation_interval。
   bool has_dispatch_delay() { return cycles > 0; }
 
   void print(FILE *fout) const;
@@ -1482,6 +1488,7 @@ class warp_inst_t : public inst_t {
   bool m_empty;
   bool m_cache_hit;
   unsigned long long issue_cycle;
+  //初始化时设置为cycles = initiation_interval;，每次调用dispatch_delay()时，cycles减1，直到cycles=0。
   unsigned cycles;  // used for implementing initiation interval delay
   bool m_isatomic;
   bool should_do_atomic;
