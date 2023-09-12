@@ -1456,7 +1456,7 @@ void ptx_instruction::pre_decode() {
   //        int dst[MAX_REG_OPERANDS];
   //        int src[MAX_REG_OPERANDS];
   //  } arch_reg;
-  //是用于Bank冲突评估的寄存器号。
+  //是用于保存源操作数和目的操作数的寄存器号。
   std::fill_n(arch_reg.src, MAX_REG_OPERANDS, -1);
   std::fill_n(arch_reg.dst, MAX_REG_OPERANDS, -1);
   //谓词寄存器号。谓词寄存器的介绍和使用见ptx_thread_info::ptx_exec_inst函数。
