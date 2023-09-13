@@ -248,8 +248,8 @@ class kernel_info_t {
       std::map<std::string, const struct textureInfo *> nameToTextureInfo);
   ~kernel_info_t();
 
-  //m_num_cores_running是一个Core计数器，它是一个全局变量，用于跟踪当前正在运行的GPU Core的数量，
-  //并确定GPU是否可以接受新的任务。下面的函数中：
+  //m_num_cores_running是一个Core计数器，它是一个全局变量，用于跟踪正在运行当前内核函数的GPU Core
+  //的数量，并确定GPU是否可以接受新的任务。下面的函数中：
   //  inc_running()增加一个正在运行的Core，将m_num_cores_running加1；
   //  dec_running()减少一个正在运行的Core，首先判断m_num_cores_running是否大于0，继而减1；
   //  running()返回是否有正在运行的Core，True 或 False；
