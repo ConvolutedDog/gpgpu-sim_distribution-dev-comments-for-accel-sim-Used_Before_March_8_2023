@@ -1997,13 +1997,20 @@ void shader_core_ctx::mem_instruction_stats(const warp_inst_t &inst) {
  * 
  * @return true if the shader core can issue 1 block of instructions, false otherwise.
  */
+/*
+判断是否可以发射一个线程块，如果可以发射一个线程块，则返回true，否则返回false。
+*/
 bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
   // Jin: concurrent kernels on one SM
+  //支持SM上的并发内核（默认为禁用），在V100配置中禁用。
   if (m_config->gpgpu_concurrent_kernel_sm) {
     if (m_config->max_cta(kernel) < 1) return false;
 
     return occupy_shader_resource_1block(kernel, false);
   } else {
+    //get_n_active_cta()返回当前SM上的活跃线程块的数量，m_config->max_cta(kernel)则是计算kernel的
+    //支持的单个SM内的最大线程块数，如果当前SM上的活跃线程块的数量小于kernel支持的单个SM内的最大线程
+    //块数，则说明此时发射一个其他kernel的线程块是可行的，返回true，否则返回false。
     return (get_n_active_cta() < m_config->max_cta(kernel));
   }
 }
@@ -2112,7 +2119,32 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
  * @param kernel
  *    object that tells us which kernel to ask for a CTA from
  */
+/*
+加载一个CTA。函数 ptx_sim_init_thread 初始化标量线程开始，然后使用ptx_exec_inst()在warp中执行标
+量线程。即每个线程的功能状态通过调用 ptx_sim_init_thread 进行初始化。这里仅是对单个线程的指令进行
+初始化，参数中包括指定某个线程的 unsigned hw_cta_id, unsigned hw_warp_id, 以及 ptx_thread_info 
+**thread_info, int sid, unsigned tid。需要注意的是，这类进行的是单个CTA内的所有线程进行循环。
 
+共享内存空间是整个CTA（线程块）所共有的，当每个CTA被分派执行时（在函数 ptx_sim_init_thread() 中），
+为其分配一个唯一的 memory_space 对象。当CTA执行完毕后，该对象被取消分配。
+
+ptx_sim_init_thread 在 functionalCoreSim::initializeCTA 函数中被调用，参数的详细说明见该调用处。
+
+函数定义：ptx_sim_init_thread(kernel_info_t &kernel,
+                                ptx_thread_info **thread_info, int sid,
+                                unsigned tid, unsigned threads_left,
+                                unsigned num_threads, core_t *core,
+                                unsigned hw_cta_id, unsigned hw_warp_id,
+                                gpgpu_t *gpu, bool isInFunctionalSimulationMode)
+参数：
+  sid=0：SM的index，由于这里执行功能模拟，因此SM的index不重要，可以完全将所有需要执行的线程全部放到
+        第0号SM上。
+  tid=i：线程的index，在这个循环里将所有需要执行的线程全部放到第0号SM上，则线程的index即为循环变量i。
+  threads_left=m_kernel->threads_per_cta()-i：在当前线程之后剩余线程的数量。
+  num_threads=m_kernel->threads_per_cta()。
+  hw_cta_id=0：由于这里执行功能模拟，因此CTA的index不重要，硬件CTA的index可以始终为0。
+  hw_warp_id=i/m_warp_size：由于全都在一个CTA内，硬件的warp的index即为i/m_warp_size。
+*/
 unsigned exec_shader_core_ctx::sim_init_thread(
     kernel_info_t &kernel, ptx_thread_info **thread_info, int sid, unsigned tid,
     unsigned threads_left, unsigned num_threads, core_t *core,
@@ -2121,26 +2153,36 @@ unsigned exec_shader_core_ctx::sim_init_thread(
                              num_threads, core, hw_cta_id, hw_warp_id, gpu);
 }
 
+/*
+SM发射kernel的一个线程块。
+*/
 void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
+  //支持SM上的并发内核（默认为禁用），在V100配置中禁用。
   if (!m_config->gpgpu_concurrent_kernel_sm)
+    //计算最大的每SM上CTA数量kernel_max_cta_per_shader，并且还要依据线程块的线程数量是否能对warp 
+    //size取模运算，来计算padded每CTA的线程数量kernel_padded_threads_per_cta。
     set_max_cta(kernel);
   else
     assert(occupy_shader_resource_1block(kernel, true));
 
+  //执行m_num_cores_running++，m_num_cores_running是一个Core计数器，它是一个全局变量，用于跟踪正
+  //在运行当前内核函数的Shader Core的数量，并确定GPU是否可以接受新的任务。
   kernel.inc_running();
 
   // find a free CTA context
-  //free_cta_hw_id指没有被占用的CTA ID。
+  //free_cta_hw_id指没有被占用的CTA ID，下面找一个空闲的CTA。
   unsigned free_cta_hw_id = (unsigned)-1;
 
   unsigned max_cta_per_core;
+  //支持SM上的并发内核（默认为禁用），在V100配置中禁用。
   if (!m_config->gpgpu_concurrent_kernel_sm)
+    //kernel_max_cta_per_shader是计算得出的最大的每SM上CTA数量。
     max_cta_per_core = kernel_max_cta_per_shader;
   else
     max_cta_per_core = m_config->max_cta_per_core;
   //对单个SIMT Core中的所有CTA循环，查找处于非活跃状态的CTA，将其编号赋值到free_cta_hw_id。
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    //m_cta_status[i] == 0代表第i个CTA内活跃的线程数量为0，即第i个CTA已经不活跃了。
+    //m_cta_status[i] == 0代表第i个CTA内活跃的线程数量为0，即第i个CTA已经不活跃了，已经结束了。
     if (m_cta_status[i] == 0) {
       free_cta_hw_id = i;
       break;
@@ -2154,15 +2196,19 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   // hw warp id = hw thread id mod warp size, so we need to find a range
   // of hardware thread ids corresponding to an integral number of hardware
   // thread ids
+  //其实这一步是重复的，因为kernel_padded_threads_per_cta的计算过程与padded_cta_size一致。
   int padded_cta_size = cta_size;
   if (cta_size % m_config->warp_size)
     padded_cta_size =
         ((cta_size / m_config->warp_size) + 1) * (m_config->warp_size);
 
+  //起始线程号和结束线程号。
   unsigned int start_thread, end_thread;
 
   if (!m_config->gpgpu_concurrent_kernel_sm) {
+    //起始线程号。
     start_thread = free_cta_hw_id * padded_cta_size;
+    //结束线程号。
     end_thread = start_thread + cta_size;
   } else {
     start_thread = find_available_hwtid(padded_cta_size, true);
@@ -2175,26 +2221,40 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 
   // reset the microarchitecture state of the selected hardware thread and warp
   // contexts
+  //重置所选硬件线程和warp上下文的微架构状态。
   reinit(start_thread, end_thread, false);
 
   // initalize scalar threads and determine which hardware warps they are
   // allocated to bind functional simulation state of threads to hardware
   // resources (simulation)
+  //初始化标量线程并确定它们分配给哪些硬件warp将功能仿真状态绑定到硬件资源（仿真）。
   warp_set_t warps;
+  //nthreads_in_block是thread block中的线程数。
   unsigned nthreads_in_block = 0;
+  //返回一个kernel的入口函数，m_kernel_entry是 function_info 对象。
   function_info *kernel_func_info = kernel.entry();
+  //符号表。
   symbol_table *symtab = kernel_func_info->get_symtab();
+  //获取下一个要发射的CTA的索引。CTA的全局索引与CUDA编程模型中的线程块索引类似，其ID算法如下：
+  //  ID = m_next_cta.x + m_grid_dim.x * m_next_cta.y +
+  //       m_grid_dim.x * m_grid_dim.y * m_next_cta.z;
   unsigned ctaid = kernel.get_next_cta_id_single();
   checkpoint *g_checkpoint = new checkpoint();
+  //从隶属于free_cta_hw_id号CTA的起始线程号到结束线程号循环。
   for (unsigned i = start_thread; i < end_thread; i++) {
+    //设置线程的CTA ID为free_cta_hw_id。
     m_threadState[i].m_cta_id = free_cta_hw_id;
+    //warp_id是线程号除以32。
     unsigned warp_id = i / m_config->warp_size;
+    //nthreads_in_block是thread block中的线程数。sim_init_thread函数会返回能否初始化第i个线程。
     nthreads_in_block += sim_init_thread(
         kernel, &m_thread[i], m_sid, i, cta_size - (i - start_thread),
         m_config->n_thread_per_shader, this, free_cta_hw_id, warp_id,
         m_cluster->get_gpu());
+    //设置第i个线程为活跃状态。
     m_threadState[i].m_active = true;
     // load thread local memory and register file
+    //在V100配置中，m_gpu->resume_option默认配置为0。
     if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
         ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
       char fname[2048];
@@ -2206,15 +2266,18 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
                i % cta_size, ctaid);
       g_checkpoint->load_global_mem(m_thread[i]->m_local_mem, f1name);
     }
-    //
+    //初始化标量线程并确定它们分配给哪些硬件warp将功能仿真状态绑定到硬件资源（仿真）。这里就是设置
+    //哪些warp为活跃。
     warps.set(warp_id);
   }
   assert(nthreads_in_block > 0 &&
          nthreads_in_block <=
              m_config->n_thread_per_shader);  // should be at least one, but
                                               // less than max
+  //m_cta_status[i] == 0代表第i个CTA内的活跃线程数量。
   m_cta_status[free_cta_hw_id] = nthreads_in_block;
 
+  //在V100配置中，m_gpu->resume_option默认配置为0。
   if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
     char f1name[2048];
@@ -2228,7 +2291,10 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   m_barriers.allocate_barrier(free_cta_hw_id, warps);
 
   // initialize the SIMT stacks and fetch hardware
+  //初始化SIMT堆栈以及预取硬件。对第cta_id个CTA中，从start_thread到end_thread个线程所属的所有
+  //warp进行初始化。
   init_warps(free_cta_hw_id, start_thread, end_thread, ctaid, cta_size, kernel);
+  //活跃的CTA数量增1。
   m_n_active_cta++;
 
   shader_CTA_count_log(m_sid, 1);
@@ -2300,12 +2366,16 @@ int gpgpu_sim::next_clock_domain(void) {
   return mask;
 }
 
+/*
+GPU发射线程块。
+*/
 void gpgpu_sim::issue_block2core() {
   unsigned last_issued = m_last_cluster_issue;
   //基本上，所有SIMT Core集群都被遍历。遍历从最后发射的集群开始。对于每个集群，调用issue_block2core，
   //它返回该集群发射的线程块数。这将增加到成员gpgpu_sim::m_total_cta_launched。
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     unsigned idx = (i + last_issued + 1) % m_shader_config->n_simt_clusters;
+    //m_cluster[idx]发射线程块，返回发射的线程块数。
     unsigned num = m_cluster[idx]->issue_block2core();
     if (num) {
       m_last_cluster_issue = idx;
@@ -2540,7 +2610,8 @@ void gpgpu_sim::cycle() {
       //这里可以将m_cluster[i]的执行状态分为几类：
       //    1. shader_core_ctx::init_warps中初始化warp时，会设置m_not_completed+=n_active，
       //       因此这里get_not_completed()返回m_not_completed的值实际上是返回的是已经初始化的
-      //       warp（CTA）中尚未完成的线程数。对于尚未初始化的warp（CTA），是没有记录的。
+      //       所有warp（即整个CTA）中尚未完成的线程数。对于尚未初始化的warp（CTA），是没有记录
+      //       的。
       //    2. 因此第二部需要判断是否有尚未初始化的warp（CTA）需要后续执行，只有1和2两个条件同时
       //       满足，才可以断定当前SIMT Core集群上还需要向前推进一拍。
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
@@ -2573,6 +2644,7 @@ void gpgpu_sim::cycle() {
     // cout<<"Average pipeline duty cycle:
     // "<<*average_pipeline_duty_cycle<<endl;
 
+    //debug。
     if (g_single_step &&
         ((gpu_sim_cycle + gpu_tot_sim_cycle) >= g_single_step)) {
       raise(SIGTRAP);  // Debug breakpoint
@@ -2595,14 +2667,32 @@ void gpgpu_sim::cycle() {
     }
     #endif
 
+    //GPU发射线程块。
     issue_block2core();
+    //该函数用于减少内核延迟kernel latency，减少从发出内核命令到内核完成执行的时间（对所有正在运
+    //行的内核的延迟减1）。该函数可以用于模拟GPU内核的性能和分析程序的性能。m_kernel_TB_latency
+    //表示每一个线程块的延迟时间，即从发出线程块到它完成执行的时间。m_kernel_TB_latency用于表示
+    //内核启动时间的变量，它表示从内核启动到内核完成执行所需要的时间。
+    //decrement_kernel_latency函数的定义为：
+    //   void gpgpu_sim::decrement_kernel_latency() {
+    //     //对所有的正在运行的内核函数的内核延迟kernel latency减1。
+    //     for (unsigned n = 0; n < m_running_kernels.size(); n++) {
+    //       if (m_running_kernels[n] && m_running_kernels[n]->m_kernel_TB_latency)
+    //         m_running_kernels[n]->m_kernel_TB_latency--;
+    //     }
+    //   }
     decrement_kernel_latency();
 
     // Depending on configuration, invalidate the caches once all of threads are
     // completed.
+    //标志所有线程都已经结束。
     int all_threads_complete = 1;
+    //在V100配置中，m_config.gpgpu_flush_l1_cache被配置为1。
     if (m_config.gpgpu_flush_l1_cache) {
+      //对所有的SIMT集群循环。
       for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+        //如果m_cluster[i]->get_not_completed()为0，代表这个SIMT Core集群中的所有线程都已经完
+        //成，因此可以将这个SIMT Core集群内所有SM的L1指令缓存和数据缓存进行失效操作。
         if (m_cluster[i]->get_not_completed() == 0)
           m_cluster[i]->cache_invalidate();
         else
@@ -2610,6 +2700,7 @@ void gpgpu_sim::cycle() {
       }
     }
 
+    //在V100配置中，m_config.gpgpu_flush_l2_cache被配置为0。
     if (m_config.gpgpu_flush_l2_cache) {
       if (!m_config.gpgpu_flush_l1_cache) {
         for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
@@ -2633,6 +2724,7 @@ void gpgpu_sim::cycle() {
       }
     }
 
+    //以下是一些采样的统计数据。
     if (!(gpu_sim_cycle % m_config.gpu_stat_sample_freq)) {
       time_t days, hrs, minutes, sec;
       time_t curr_time;
