@@ -226,8 +226,16 @@ bool memory_partition_unit::can_issue_to_dram(int inner_sub_partition_id) {
   return (has_dram_resource && !sub_partition_contention);
 }
 
+/*
+m_id是内存分区单元（内存通道）的ID，m_n_sub_partition_per_memory_channel是每个内存通道的子分区数，
+global_sub_partition_id是内存子分区的全局ID，这里是计算当前内存子分区的本地ID，即当前内存子分区在
+当前内存通道中的本地ID。
+*/
 int memory_partition_unit::global_sub_partition_id_to_local_id(
     int global_sub_partition_id) const {
+  //m_id是内存分区单元（内存通道）的ID，m_n_sub_partition_per_memory_channel是每个内存通道的子分
+  //区数，global_sub_partition_id是内存子分区的全局ID，这里是计算当前内存子分区的本地ID，即当前内
+  //存子分区在当前内存通道中的本地ID。
   return (global_sub_partition_id -
           m_id * m_config->m_n_sub_partition_per_memory_channel);
 }
@@ -303,21 +311,30 @@ void memory_partition_unit::simple_dram_model_cycle() {
 }
 
 /*
-将内存请求从L2->dram队列移动到DRAM Channel，DRAM Channel到dram->L2队列，并循环片外GDDR3 DRAM内存。
+将内存请求从L2->dram队列移动到DRAM Channel，并将DRAM的返回请求队列中的数据包从DRAM Channel到dram->
+L2队列，并对片外GDDR3 DRAM内存向前推进一拍。
 */
 void memory_partition_unit::dram_cycle() {
   // pop completed memory request from dram and push it to dram-to-L2 queue
   // of the original sub partition
+  //从DRAM弹出已完成的内存请求并将其推送到原始子分区的DRAM到L2队列。m_dram->return_queue_top()返回
+  //dram->returnq返回请求队列的顶部元素mf_return，如果队列为空，则返回NULL。
   mem_fetch *mf_return = m_dram->return_queue_top();
   if (mf_return) {
+    //如果mf_return有效的话，说明DRAM已经完成了对mf_return的处理，可以将其从DRAM返回队列中弹出。
     unsigned dest_global_spid = mf_return->get_sub_partition_id();
+    //计算当前内存子分区的本地ID，即当前内存子分区在当前内存通道中的本地ID。
     int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
+    //m_sub_partition[dest_spid]->get_id()返回内存子分区的全局ID。
     assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
+    //如果dest_spid所标识的内存子分区的DRAM_to_L2队列未满。
     if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
       if (mf_return->get_access_type() == L1_WRBK_ACC) {
+        //mf_return内存请求是写响应的话，只需设置其完成即可。
         m_sub_partition[dest_spid]->set_done(mf_return);
         delete mf_return;
       } else {
+        //将mf_return推送到DRAM_to_L2队列中。
         m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
         mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -326,12 +343,15 @@ void memory_partition_unit::dram_cycle() {
             "mem_fetch request %p return from dram to sub partition %d\n",
             mf_return, dest_spid);
       }
+      //弹出已完成的内存请求。
       m_dram->return_queue_pop();
     }
   } else {
+    //如果mf_return无效的话，说明这个数据包无效直接弹出作废即可。
     m_dram->return_queue_pop();
   }
 
+  //DRAM向前推进一拍。
   m_dram->cycle();
   m_dram->dram_log(SAMPLELOG);
 
