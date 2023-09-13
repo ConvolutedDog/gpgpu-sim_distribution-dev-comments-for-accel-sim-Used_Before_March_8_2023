@@ -253,7 +253,7 @@ class memory_sub_partition {
   memory_sub_partition(unsigned sub_partition_id, const memory_config *config,
                        class memory_stats_t *stats, class gpgpu_sim *gpu);
   ~memory_sub_partition();
-
+  //m_sub_partition[dest_spid]->get_id()返回内存子分区的全局ID。
   unsigned get_id() const { return m_id; }
 
   bool busy() const;
@@ -298,6 +298,7 @@ class memory_sub_partition {
 
  private:
   // data
+  //内存子分区的全局ID。
   unsigned m_id;  //< the global sub partition ID
   const memory_config *m_config;
   class l2_cache *m_L2cache;
