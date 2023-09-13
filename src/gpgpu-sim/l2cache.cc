@@ -504,7 +504,7 @@ memory_sub_partition::~memory_sub_partition() {
 */
 void memory_sub_partition::cache_cycle(unsigned cycle) {
   // L2 fill responses
-  //在配置文件中，L2 Cache并未禁用。
+  //在V100配置文件中，L2 Cache并未禁用。
   if (!m_config->m_L2_config.disabled()) {
     //L2 Cache内部的MSHR维护了一个就绪内存访问的列表m_current_response，m_L2cache->access_ready()返
     //回的是m_current_response非空，即如果m_current_response非空，说明L2 Cache的MSHR中有就绪的内存访
@@ -515,29 +515,80 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       //m_L2cache->next_access()调用MSHR的next_access()返回一个就绪的内存访问，即m_current_response
       //中的顶部地址标志的数据包（m_current_response仅存储了就绪内存访问的地址）。
       mem_fetch *mf = m_L2cache->next_access();
+      //mem_access_type定义了在时序模拟器中对不同类型的存储器进行不同的访存类型：
+      //    MA_TUP(GLOBAL_ACC_R),        从global memory读
+      //    MA_TUP(LOCAL_ACC_R),         从local memory读
+      //    MA_TUP(CONST_ACC_R),         从常量缓存读
+      //    MA_TUP(TEXTURE_ACC_R),       从纹理缓存读
+      //    MA_TUP(GLOBAL_ACC_W),        向global memory写
+      //    MA_TUP(LOCAL_ACC_W),         向local memory写
+      //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
+      //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
+      //    MA_TUP(INST_ACC_R),          从指令缓存读
+      //    MA_TUP(L1_WR_ALLOC_R),       L1缓存write-allocate（cache写不命中，将主存中块调入cache，
+      //                                 写入该cache块）
+      //    MA_TUP(L2_WR_ALLOC_R),       L2缓存write-allocate（cache写不命中，将主存中块调入cache，
+      //                                 写入该cache块）
+      //    MA_TUP(NUM_MEM_ACCESS_TYPE), 存储器访问的类型总数
       if (mf->get_access_type() !=
           L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
                             // upper level cache
+        //当前缓存层次是L2缓存，如果mf的类型是L2_WR_ALLOC_R，说明L2缓存发生了写不命中，需要将主存中块调
+        //入L2缓存再写入该块，因此mf的类型是L2_WR_ALLOC_R时，不能将mf再向ICNT发送。
+        //set_reply()用来设置内存访问请求响应的类型，内存访问请求中包含四种类型：读请求、写请求、读响应、
+        //写确认。这里是设置读响应或者是写确认。
+        // void set_reply() {
+        //       assert(m_access.get_type() != L1_WRBK_ACC &&
+        //             m_access.get_type() != L2_WRBK_ACC);
+        //       //如果内存访问请求的类型是读请求，将其设置为读响应。
+        //       if (m_type == READ_REQUEST) {
+        //         assert(!get_is_write());
+        //         m_type = READ_REPLY;
+        //       //如果内存访问请求的类型是写请求，将其设置为写确认。
+        //       } else if (m_type == WRITE_REQUEST) {
+        //         assert(get_is_write());
+        //         m_type = WRITE_ACK;
+        //       }
+        //     }
         mf->set_reply();
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        //将mf填充进L2缓存到ICNT的队列m_L2_icnt_queue。
         m_L2_icnt_queue->push(mf);
       } else {
-        //如果mf是L2_WR_ALLOC_R类型，就将mf的状态设置为IN_PARTITION_L2_FILL_QUEUE，将mf填充进L2
+        //当前缓存层次是L2缓存，如果mf的类型是L2_WR_ALLOC_R，说明L2缓存发生了写不命中，需要将主存中块调
+        //入L2缓存再写入该块，因此mf的类型是L2_WR_ALLOC_R时，不能将mf再向ICNT发送。
         //FETCH_ON_WRITE 是一种写分配（write allocate）策略中的一个选项。写分配是指在写入操作发生时，如
         //果目标地址不在缓存中，会将该地址的数据从内存中读取到缓存中，然后再进行写入操作。FETCH_ON_WRITE 
         //是指在写入操作发生时才执行读取操作，也就是在进行写入之前先从内存中获取数据。这个策略的优点是能够
         //减少写操作所需要的内存访问次数，从而降低延迟。当写入操作频繁时，使用 FETCH_ON_WRITE 策略可以有
-        //效地提高缓存的性能。????
+        //效地提高缓存的性能。V100配置中，m_L2_config.m_write_alloc_policy被配置为LAZY_FETCH_ON_READ，
+        //下面的if块不生效。
         if (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE) {
           mem_fetch *original_wr_mf = mf->get_original_wr_mf();
           assert(original_wr_mf);
+          //set_reply()用来设置内存访问请求响应的类型，内存访问请求中包含四种类型：读请求、写请求、读响应、
+          //写确认。这里是设置读响应或者是写确认。
+          // void set_reply() {
+          //       assert(m_access.get_type() != L1_WRBK_ACC &&
+          //             m_access.get_type() != L2_WRBK_ACC);
+          //       //如果内存访问请求的类型是读请求，将其设置为读响应。
+          //       if (m_type == READ_REQUEST) {
+          //         assert(!get_is_write());
+          //         m_type = READ_REPLY;
+          //       //如果内存访问请求的类型是写请求，将其设置为写确认。
+          //       } else if (m_type == WRITE_REQUEST) {
+          //         assert(get_is_write());
+          //         m_type = WRITE_ACK;
+          //       }
+          //     }
           original_wr_mf->set_reply();
           original_wr_mf->set_status(
               IN_PARTITION_L2_TO_ICNT_QUEUE,
               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
           m_L2_icnt_queue->push(original_wr_mf);
         }
+        //V100配置中，m_L2_config.m_write_alloc_policy被配置为LAZY_FETCH_ON_READ，上面的if块不生效。
         m_request_tracker.erase(mf);
         delete mf;
       }
@@ -549,6 +600,20 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
   if (!m_dram_L2_queue->empty()) {
     //获取m_dram_L2_queue的顶部数据包。
     mem_fetch *mf = m_dram_L2_queue->top();
+    // m_L2cache->waiting_for_fill(mf) checks if mf is waiting to be filled by lower memory level.
+    //检查是否mf正在等待更低的存储层次填充。waiting_for_fill(mem_fetch *mf)的定义为：
+    //     bool baseline_cache::waiting_for_fill(mem_fetch *mf) {
+    //       //extra_mf_fields_lookup的定义：
+    //       //  typedef std::map<mem_fetch *, extra_mf_fields> extra_mf_fields_lookup;
+    //       //向cache发出数据请求mf时，如果未命中，且在MSHR中也未命中（没有mf条目），则将其加入到MSHR中，
+    //       //同时，设置m_extra_mf_fields[mf]，意味着如果mf在m_extra_mf_fields中存在，即mf等待着DRAM
+    //       //的数据回到L2缓存填充：
+    //       //m_extra_mf_fields[mf] = extra_mf_fields(
+    //       //      mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
+    //       extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
+    //       return e != m_extra_mf_fields.end();
+    //     }
+    //若m_L2cache->waiting_for_fill(mf)为真说明此处L2缓存的MSHR中存在mf条目，正在等待DRAM返回的数据填充。
     if (!m_config->m_L2_config.disabled() && m_L2cache->waiting_for_fill(mf)) {
       if (m_L2cache->fill_port_free()) {
         mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
@@ -560,42 +625,69 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
         m_dram_L2_queue->pop();
       }
     } else if (!m_L2_icnt_queue->full()) {
+      //如果m_L2cache->waiting_for_fill(mf)不为真，则说明L2缓存的MSHR中不存在mf条目，不在等待DRAM返回
+      //的数据填充，那么就可以直接将mf发送回ICNT。
       if (mf->is_write() && mf->get_type() == WRITE_ACK)
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      //将数据包mf推入m_L2_icnt_queue队列。
       m_L2_icnt_queue->push(mf);
       m_dram_L2_queue->pop();
     }
   }
 
   // prior L2 misses inserted into m_L2_dram_queue here
+  //L2缓存向前推进一拍。
   if (!m_config->m_L2_config.disabled()) m_L2cache->cycle();
 
   // new L2 texture accesses and/or non-texture accesses
+  //如果L2向DRAM的队列不满，且ICNT向L2的队列不空，就将ICNT向L2的队列的顶部数据包弹出，填入L2 Cache。
   if (!m_L2_dram_queue->full() && !m_icnt_L2_queue->empty()) {
+    //将ICNT向L2的队列的顶部数据包弹出。
     mem_fetch *mf = m_icnt_L2_queue->top();
+    //在V100配置中，-gpgpu_cache:dl2_texture_only被设置为0。
     if (!m_config->m_L2_config.disabled() &&
         ((m_config->m_L2_texure_only && mf->istexture()) ||
          (!m_config->m_L2_texure_only))) {
       // L2 is enabled and access is for L2
+      //L2缓存被启用，并且访问是针对L2的。
+      //m_L2_icnt_queue->full()判断L2缓存向ICNT的队列是否满。
       bool output_full = m_L2_icnt_queue->full();
+      //m_L2cache->data_port_free()判断L2缓存的数据端口是否空闲。
       bool port_free = m_L2cache->data_port_free();
+      //如果L2缓存向ICNT的队列不满，且L2缓存的数据端口空闲，ICNT向L2的队列的顶部数据包进行L2数据访问。
       if (!output_full && port_free) {
         std::list<cache_event> events;
+        //对ICNT向L2的队列的顶部数据包进行L2数据访问，获取访问的状态。
         enum cache_request_status status =
             m_L2cache->access(mf->get_addr(), mf,
                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
                                   m_memcpy_cycle_offset,
                               events);
+        //判断一系列的访问cache事件events是否存在WRITE_REQUEST_SENT。
+        //缓存事件类型包括：
+        // enum cache_event_type {
+        //       //写回请求。
+        //       WRITE_BACK_REQUEST_SENT,
+        //       //读请求。
+        //       READ_REQUEST_SENT,
+        //       //写请求。
+        //       WRITE_REQUEST_SENT,
+        //       //写分配请求。
+        //       WRITE_ALLOCATE_SENT
+        //     };
         bool write_sent = was_write_sent(events);
+        //判断一系列的访问cache事件events是否存在READ_REQUEST_SENT。
         bool read_sent = was_read_sent(events);
         MEM_SUBPART_DPRINTF("Probing L2 cache Address=%llx, status=%u\n",
                             mf->get_addr(), status);
 
         if (status == HIT) {
+          //如果访问L2缓存命中。
           if (!write_sent) {
             // L2 cache replies
             assert(!read_sent);
+            //!write_sent且!read_sent，发送的是WRITE_BACK_REQUEST_SENT/WRITE_ALLOCATE_SENT。
             if (mf->get_access_type() == L1_WRBK_ACC) {
               m_request_tracker.erase(mf);
               delete mf;
@@ -605,13 +697,17 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
               m_L2_icnt_queue->push(mf);
             }
+            //从ICNT向L2的队列中弹出。
             m_icnt_L2_queue->pop();
           } else {
             assert(write_sent);
+            //从ICNT向L2的队列中弹出。
             m_icnt_L2_queue->pop();
           }
         } else if (status != RESERVATION_FAIL) {
+          //如果访问L2缓存不是命中且不是保留失败，包括HIT_RESERVED/MISS/SECTOR_MISS/MSHR_HIT。
           if (mf->is_write() &&
+              //V100配置中，m_L2_config.m_write_alloc_policy被配置为LAZY_FETCH_ON_READ。
               (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE ||
                m_config->m_L2_config.m_write_alloc_policy ==
                    LAZY_FETCH_ON_READ) &&
@@ -636,6 +732,8 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       }
     } else {
       // L2 is disabled or non-texture access to texture-only L2
+      //L2缓存被禁用或者非纹理访问texture-only L2，但是不存在这种情况，因为在V100配置中，选项
+      //-gpgpu_cache:dl2_texture_only被设置为0。
       mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
                      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       m_L2_dram_queue->push(mf);
@@ -644,6 +742,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
   }
 
   // ROP delay queue
+  //光栅操作流水线（Raster Operations Pipeline，ROP）延迟队列。
   if (!m_rop.empty() && (cycle >= m_rop.front().ready_cycle) &&
       !m_icnt_L2_queue->full()) {
     mem_fetch *mf = m_rop.front().req;
