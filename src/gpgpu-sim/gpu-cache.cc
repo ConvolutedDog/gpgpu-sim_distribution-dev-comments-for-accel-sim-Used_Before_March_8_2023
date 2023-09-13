@@ -522,6 +522,20 @@ void tag_array::get_stats(unsigned &total_access, unsigned &total_misses,
   total_res_fail = m_res_fail;
 }
 
+/*
+判断一系列的访问cache事件是否存在WRITE_REQUEST_SENT。
+缓存事件类型包括：
+    enum cache_event_type {
+      //写回请求。
+      WRITE_BACK_REQUEST_SENT,
+      //读请求。
+      READ_REQUEST_SENT,
+      //写请求。
+      WRITE_REQUEST_SENT,
+      //写分配请求。
+      WRITE_ALLOCATE_SENT
+    };
+*/
 bool was_write_sent(const std::list<cache_event> &events) {
   for (std::list<cache_event>::const_iterator e = events.begin();
        e != events.end(); e++) {
@@ -530,6 +544,20 @@ bool was_write_sent(const std::list<cache_event> &events) {
   return false;
 }
 
+/*
+判断一系列的访问cache事件是否存在WRITE_BACK_REQUEST_SENT。
+缓存事件类型包括：
+    enum cache_event_type {
+      //写回请求。
+      WRITE_BACK_REQUEST_SENT,
+      //读请求。
+      READ_REQUEST_SENT,
+      //写请求。
+      WRITE_REQUEST_SENT,
+      //写分配请求。
+      WRITE_ALLOCATE_SENT
+    };
+*/
 bool was_writeback_sent(const std::list<cache_event> &events,
                         cache_event &wb_event) {
   for (std::list<cache_event>::const_iterator e = events.begin();
@@ -542,6 +570,20 @@ bool was_writeback_sent(const std::list<cache_event> &events,
   return false;
 }
 
+/*
+判断一系列的访问cache事件是否存在READ_REQUEST_SENT。
+缓存事件类型包括：
+    enum cache_event_type {
+      //写回请求。
+      WRITE_BACK_REQUEST_SENT,
+      //读请求。
+      READ_REQUEST_SENT,
+      //写请求。
+      WRITE_REQUEST_SENT,
+      //写分配请求。
+      WRITE_ALLOCATE_SENT
+    };
+*/
 bool was_read_sent(const std::list<cache_event> &events) {
   for (std::list<cache_event>::const_iterator e = events.begin();
        e != events.end(); e++) {
@@ -550,6 +592,20 @@ bool was_read_sent(const std::list<cache_event> &events) {
   return false;
 }
 
+/*
+判断一系列的访问cache事件是否存在WRITE_ALLOCATE_SENT。
+缓存事件类型包括：
+    enum cache_event_type {
+      //写回请求。
+      WRITE_BACK_REQUEST_SENT,
+      //读请求。
+      READ_REQUEST_SENT,
+      //写请求。
+      WRITE_REQUEST_SENT,
+      //写分配请求。
+      WRITE_ALLOCATE_SENT
+    };
+*/
 bool was_writeallocate_sent(const std::list<cache_event> &events) {
   for (std::list<cache_event>::const_iterator e = events.begin();
        e != events.end(); e++) {
@@ -1189,7 +1245,17 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
 }
 
 // Checks if mf is waiting to be filled by lower memory level
+/*
+检查是否mf正在等待更低的存储层次填充。
+*/
 bool baseline_cache::waiting_for_fill(mem_fetch *mf) {
+  //extra_mf_fields_lookup的定义：
+  //  typedef std::map<mem_fetch *, extra_mf_fields> extra_mf_fields_lookup;
+  //向cache发出数据请求mf时，如果未命中，且在MSHR中也未命中（没有mf条目），则将其加入到MSHR中，
+  //同时，设置m_extra_mf_fields[mf]，意味着如果mf在m_extra_mf_fields中存在，即mf等待着DRAM
+  //的数据回到L2缓存填充：
+  //m_extra_mf_fields[mf] = extra_mf_fields(
+  //      mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
   extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
   return e != m_extra_mf_fields.end();
 }
