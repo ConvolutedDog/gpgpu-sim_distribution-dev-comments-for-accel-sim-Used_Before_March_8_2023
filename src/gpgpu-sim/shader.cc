@@ -638,10 +638,14 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
   }
 }
 
+/*
+对第cta_id个CTA中，从start_thread到end_thread个线程所属的所有warp进行初始化。
+*/
 void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
                                  unsigned end_thread, unsigned ctaid,
                                  int cta_size, kernel_info_t &kernel) {
-  //
+  //功能模拟过程中，用warp的起始PC值（用该warp的首个线程m_thread[warpId*m_warp_size]->get_pc()获取）
+  //线程和其线程掩码用于启动SIMT堆栈。每个warp都有一个单独的SIMT堆栈。
   address_type start_pc = next_pc(start_thread);
   unsigned kernel_id = kernel.get_uid();
   if (m_config->model == POST_DOMINATOR) {
@@ -649,20 +653,29 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
     unsigned warp_per_cta = cta_size / m_config->warp_size;
     unsigned end_warp = end_thread / m_config->warp_size +
                         ((end_thread % m_config->warp_size) ? 1 : 0);
+    //从start_warp开始到end_warp循环。
     for (unsigned i = start_warp; i < end_warp; ++i) {
+      //n_active是所有warp中的活跃线程的个数。
       unsigned n_active = 0;
       simt_mask_t active_threads;
+      //局部线程ID，从0到31循环。
       for (unsigned t = 0; t < m_config->warp_size; t++) {
+        //硬件上的线程ID，即全局ID=warp_id*32+局部ID。
         unsigned hwtid = i * m_config->warp_size + t;
         if (hwtid < end_thread) {
           n_active++;
           assert(!m_active_threads.test(hwtid));
+          //设置全局活跃线程的位图。
           m_active_threads.set(hwtid);
+          //设置局部活跃线程的位图。
           active_threads.set(t);
         }
       }
+      //功能模拟过程中，用warp的起始PC值（用该warp的首个线程m_thread[warpId*m_warp_size]->get_pc()获
+      //取）线程和其线程掩码用于启动SIMT堆栈。每个warp都有一个单独的SIMT堆栈。
       m_simt_stack[i]->launch(start_pc, active_threads);
 
+      //在V100配置中，m_gpu->resume_option被默认配置为0。
       if (m_gpu->resume_option == 1 && kernel_id == m_gpu->resume_kernel &&
           ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
         char fname[2048];
@@ -680,9 +693,13 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
         start_pc = pc;
       }
 
+      //对全局第i个warp，m_warp[i]进行初始化。
       m_warp[i]->init(start_pc, cta_id, i, active_threads, m_dynamic_warp_id);
+      //下一个动态warp的ID，每有一个warp变成活跃状态就增1。
       ++m_dynamic_warp_id;
+      //m_not_completed的值实际上是返回的是已经初始化的所有warp（即整个CTA）中尚未完成的线程数。
       m_not_completed += n_active;
+      //活跃warp的数量增1。
       ++m_active_warps;
     }
   }
@@ -4886,8 +4903,13 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   return true;
 }
 
+/*
+计算最大的每SM上CTA数量kernel_max_cta_per_shader，并且还要依据线程块的线程数量是否能对warp 
+size取模运算，来计算padded每CTA的线程数量kernel_padded_threads_per_cta。
+*/
 void shader_core_ctx::set_max_cta(const kernel_info_t &kernel) {
   // calculate the max cta count and cta size for local memory address mapping
+  //计算最大的每SM上CTA数量，以及padded每CTA的线程数量。
   kernel_max_cta_per_shader = m_config->max_cta(kernel);
   unsigned int gpu_cta_size = kernel.threads_per_cta();
   kernel_padded_threads_per_cta =
@@ -5904,7 +5926,7 @@ unsigned simt_core_cluster::get_n_active_sms() const {
 unsigned simt_core_cluster::issue_block2core() {
   //当前SIMT Core集群发射的线程块的计数。
   unsigned num_blocks_issued = 0;
-  //遍历当前SIMT Core集群内的所有SIMT Core。
+  //遍历当前SIMT Core集群内的所有SIMT Core，为每个SM找一个kernel发射。
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     //SIMT Core的编号。
     unsigned core =
@@ -5925,18 +5947,25 @@ unsigned simt_core_cluster::issue_block2core() {
       kernel = m_core[core]->get_kernel();
       if (!m_gpu->kernel_more_cta_left(kernel)) {
         // wait till current kernel finishes
+        //返回当前SIMT Core尚未完成的线程个数。如果尚未完成的线程个数等于0，则说明该SM上的线程已经全
+        //部结束，该kernel执行完毕。
         if (m_core[core]->get_not_completed() == 0) {
           kernel_info_t *k = m_gpu->select_kernel();
+          //将kernel部署到SM上。
           if (k) m_core[core]->set_kernel(k);
           kernel = k;
         }
       }
     }
-    //如果kernel有更多的CTA待执行，且m_core[core]可以发射一个内核函数，发射。
+    //如果kernel有更多的CTA待执行，即当前SM尚未完成kernel的执行，但是m_core[core]可以发射一个内核函
+    //数，则发射。
     if (m_gpu->kernel_more_cta_left(kernel) &&
         //            (m_core[core]->get_n_active_cta() <
         //            m_config->max_cta(*kernel)) ) {
+        //can_issue_1block(*kernel)判断是否可以发射一个线程块，如果可以发射一个线程块，则返回true，
+        //否则返回false。
         m_core[core]->can_issue_1block(*kernel)) {
+      //将kernel部署到SM上。
       m_core[core]->issue_block2core(*kernel);
       num_blocks_issued++;
       m_cta_issue_next_core = core;
