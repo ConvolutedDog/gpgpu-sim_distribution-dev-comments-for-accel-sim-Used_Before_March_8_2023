@@ -2397,6 +2397,12 @@ void gpgpu_sim::cycle() {
       //返回。这里是对所有内存子分区循环，将所有内存子分区的m_L2_icnt_queue队列顶部的数据包弹出。
       mem_fetch *mf = m_memory_sub_partition[i]->top();
       if (mf) {
+        // The packet size varies depending on the type of request:
+        // - For read request and atomic request, the packet contains the data
+        // - For write-ack, the packet only has control metadata
+        //数据包大小因请求类型而异：
+        // - 对于读取请求和原子请求，数据包包含数据；
+        // - 对于写确认，数据包只有控制元数据。
         unsigned response_size =
             mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
         //在从内存子分区向互连网络弹出时，如果互连网络中有空闲的缓冲区，则将内存请求推入互连网络。但是
@@ -2408,6 +2414,7 @@ void gpgpu_sim::cycle() {
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
           ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
                       response_size);
+          //m_memory_sub_partition[i]中都有各自的m_icnt_L2_queue队列，这是ICNT给SM数据包的接口。
           m_memory_sub_partition[i]->pop();
           partiton_replys_in_parallel_per_cycle++;
         } else {
@@ -2425,6 +2432,7 @@ void gpgpu_sim::cycle() {
     //对每个DRAM通道循环，调用memory_partition_unit::dram_cycle()方法，将内存请求从L2->dram队列移
     //动到DRAM Channel，DRAM Channel到dram->L2队列，并循环片外GDDR3 DRAM内存。
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
+      //在V100中，simple_dram_model被配置为0。
       if (m_memory_config->simple_dram_model)
         m_memory_partition_unit[i]->simple_dram_model_cycle();
       else
@@ -2469,7 +2477,7 @@ void gpgpu_sim::cycle() {
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
       //将内存请求从互连移动到内存分区（如果没有备份）注意：如果系统中没有二级缓存，则
       //需要在DRAM时钟域中调用。在最坏的情况下，我们可能需要推送SECTOR_CHUNCK_SIZE大小
-      //的请求，因此确保您有足够的缓冲区来处理它们。
+      //的请求，因此需要确保有足够的缓冲区来处理它们。
       //m_memory_sub_partition[i]->full的定义为：
       //    bool memory_sub_partition::full(unsigned size) const {
       //      return m_icnt_L2_queue->is_avilable_size(size);
