@@ -2659,6 +2659,7 @@ class shader_core_ctx : public core_t {
   bool ldst_unit_response_buffer_full() const;
   //返回当前SM未完成的线程数。
   unsigned get_not_completed() const { return m_not_completed; }
+  //返回当前SM上的活跃线程块的数量。
   unsigned get_n_active_cta() const { return m_n_active_cta; }
 
   //m_n_active_cta指当前在此Shader Core上运行的CTA的数量。如果该数量大于0，则代表当前Core是活跃的；反之，
