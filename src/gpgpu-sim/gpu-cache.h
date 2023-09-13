@@ -56,10 +56,11 @@ enum cache_block_state { INVALID = 0, RESERVED, VALID, MODIFIED };
 enum cache_request_status {
   //命中。
   HIT = 0,
-  //
+  //保留成功。
   HIT_RESERVED,
   //未命中。
   MISS,
+  //保留失败。
   RESERVATION_FAIL,
   SECTOR_MISS,
   MSHR_HIT,
@@ -75,10 +76,17 @@ enum cache_reservation_fail_reason {
   NUM_CACHE_RESERVATION_FAIL_STATUS
 };
 
+/*
+缓存事件类型。
+*/
 enum cache_event_type {
+  //写回请求。
   WRITE_BACK_REQUEST_SENT,
+  //读请求。
   READ_REQUEST_SENT,
+  //写请求。
   WRITE_REQUEST_SENT,
+  //写分配请求。
   WRITE_ALLOCATE_SENT
 };
 
