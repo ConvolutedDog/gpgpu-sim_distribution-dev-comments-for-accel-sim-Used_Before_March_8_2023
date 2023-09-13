@@ -2015,6 +2015,9 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
   }
 }
 
+/*
+并发内核使用，在V100配置中用不到。
+*/
 int shader_core_ctx::find_available_hwtid(unsigned int cta_size, bool occupy) {
   unsigned int step;
   for (step = 0; step < m_config->n_thread_per_shader; step += cta_size) {
@@ -2036,6 +2039,9 @@ int shader_core_ctx::find_available_hwtid(unsigned int cta_size, bool occupy) {
   }
 }
 
+/*
+并发内核使用，在V100配置中用不到。
+*/
 bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
                                                     bool occupy) {
   unsigned threads_per_cta = k.threads_per_cta();
