@@ -180,7 +180,7 @@ GPGPU-Sim dependencies:
 
 GPGPU-Sim documentation dependencies:
 - doxygen
-- graphvi
+- graphviz
 
 AerialVision dependencies:
 - python-pmw
@@ -197,6 +197,12 @@ dependencies besides the CUDA Toolkit.
 GPGPU-Sim dependencies:
 
 	sudo apt-get install build-essential xutils-dev bison zlib1g-dev flex libglu1-mesa-dev
+
+For CentOS:
+
+	yum install -y xorg-x11-utils
+	yum install -y freeglut-devel
+	yum install -y bison zlib flex
 
 GPGPU-Sim documentation dependencies:
 
