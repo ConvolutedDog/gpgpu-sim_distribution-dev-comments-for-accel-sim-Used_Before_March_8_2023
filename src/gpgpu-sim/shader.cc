@@ -1053,7 +1053,7 @@ void shader_core_ctx::decode() {
       } else if (pI1->oprnd_type == FP_OP) {
         m_stats->m_num_FPdecoded_insn[m_sid]++;
       }
-      //获取下一条指令。
+      //获取下一条指令。一次decode解码放进ibuffer两条指令，所以这里再获取一条指令。
       const warp_inst_t *pI2 =
           get_next_inst(m_inst_fetch_buffer.m_warp_id, pc + pI1->isize);
       if (pI2) {
@@ -1118,13 +1118,18 @@ void shader_core_ctx::fetch() {
   //建模。它有一个成员m_valid，用于指示缓冲区是否有有效的指令。它还将指令的warp id记录在m_warp_id中。
   //因此，当m_valid为0，即指示缓冲区暂时没有有效的指令，可以预取新的指令。注意预取新的指令时，要对新的
   //指令新建一个 ifetch_Buffer_t 对象，在这里 ifetch_Buffer_t 结构更像是每次取新指令这一行为的建模。
+
+  //在每个fetch()步骤中，m_inst_fetch_buffer都会发出指令内存提取请求，并从L1指令缓存中收集提取的指令。
+  //在每个decode()步骤中，m_inst_fetch_buffer中的上下文被解码为warp_inst_t的对象，并存储到等待调度器
+  //发布的相应硬件warp的ibuffer中。
   if (!m_inst_fetch_buffer.m_valid) {
-    //m_L1I是指令缓存（I-cache），在手册中<<三、SIMT Cores>>部分有I-cache的详细图。如果存在就绪访问，
-    //则m_L1I->access_ready()返回true。这里就绪的内存访问代表的是，I-cache含有新的可以就绪的指令。
+    //m_L1I是指令缓存（I-cache），在手册中<<三、SIMT Cores>>部分有I-cache的详细图。如果存在已经被填
+    //入MSHR条目的访问，则m_L1I->access_ready()返回true。这里填入的内存访问代表的是，I-cache含有新
+    //的可以就绪的指令。如果存在已经被填入MSHR条目的访问，则返回true，其条目非空证明可以合并内存访问。
     //m_current_response是就绪内存访问的列表，m_L1I->access_ready()返回的是m_current_response中是
     //否有就绪的内存访问。m_current_response仅存储了就绪内存访问的地址。
     if (m_L1I->access_ready()) {
-      //获取I-cache的下次内存访问，返回下一个就绪访问，即返回下一个就绪的指令。
+      //获取I-cache的下次内存访问，返回下一个已经填入的访问，即返回下一个已经填入访问的请求。
       mem_fetch *mf = m_L1I->next_access();
       //如果前面 mem_fetch *mf 已经获取了就绪的指令，则证明 mf 所在的warp现在不处于挂起的指令缓冲未命
       //中的状态，设置该状态为false。mf->get_wid()返回的是当前已就绪的指令所在的warp的ID，那么证明当
@@ -3572,7 +3577,7 @@ void ldst_unit::cycle() {
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
 
-  //如果SIMT Core集群的数据响应FIFO不为空。
+  //如果LDST单元的数据响应FIFO不为空。
   if (!m_response_fifo.empty()) {
     //获取FIFO中的第一个mem_fetch指针。
     mem_fetch *mf = m_response_fifo.front();
@@ -5921,10 +5926,10 @@ unsigned simt_core_cluster::get_n_active_sms() const {
 }
 
 /*
-对所有SIMT Core集群遍历，选择每个集群内的一个SIMT Core，向其发射一个线程块。
+对所有SIMT Core集群遍历，选择某个集群内的一个SIMT Core，向其发射一个线程块。
 */
 unsigned simt_core_cluster::issue_block2core() {
-  //当前SIMT Core集群发射的线程块的计数。
+  //当前批次向SIMT Core集群发射的线程块的计数。
   unsigned num_blocks_issued = 0;
   //遍历当前SIMT Core集群内的所有SIMT Core，为每个SM找一个kernel发射。
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
@@ -6071,7 +6076,7 @@ simt_core_cluster::icnt_cycle()方法将内存请求从互连网络推入simt核
 Core共享。
 */
 void simt_core_cluster::icnt_cycle() {
-  //如果响应FIFO非空。这里的m_response_fifo是指SIMT Core集群的响应FIFO。
+  //如果响应FIFO非空，才可以接收来自ICNT的数据包。这里的m_response_fifo是指SIMT Core集群的响应FIFO。
   if (!m_response_fifo.empty()) {
     //从响应FIFO头部推出一个数据包 mf。m_response_fifo被定义为：
     //    std::list<mem_fetch *> m_response_fifo;
