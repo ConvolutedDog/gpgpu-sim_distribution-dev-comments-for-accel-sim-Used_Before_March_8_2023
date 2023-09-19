@@ -1070,13 +1070,19 @@ class tag_array {
 一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有固定数量
 的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR条目的数量和每
 个条目的最大请求数是可配置的。
+
+缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未命中
+处理逻辑将首先检查未命中状态保持寄存器（MSHR），以查看当前是否有来自先前请求的相同请求挂起。如果是，
+则此请求将合并到同一条目中，并且不需要发出新的数据请求。否则，将为该数据请求保留一个新的MSHR条目和缓
+存行。缓存状态处理程序可能会在资源不可用时失败，例如没有可用的MSHR条目、该集中的所有缓存块都已保留但
+尚未填充、未命中队列已满等。
 */
 class mshr_table {
  public:
   //构造函数。参数为：
   //    num_entries：MSHR中的条目的个数。
   //    max_merged：MSHR中的单个条目的最大请求数，当一个请求正在运行时，对内存系统的冗余访问被合
-  //                并到MSHR中。
+  //                并到MSHR中。此请求将合并到同一条目中，并且不需要发出新的数据请求。
   //    m_data：std::unordered_map，是<new_addr_type, mshr_entry>的无序map。
   mshr_table(unsigned num_entries, unsigned max_merged)
       : m_num_entries(num_entries),
@@ -1092,7 +1098,7 @@ class mshr_table {
   //检查是否已存在对较低内存级别的挂起请求。
   bool probe(new_addr_type block_addr) const;
   // Checks if there is space for tracking a new memory access
-  //检查是否有空间处理新的内存访问。
+  //检查是否有空间处理新的内存访问。检查是否有空余mshr条目处理新的内存访问。
   bool full(new_addr_type block_addr) const;
   // Add or merge this access
   //添加或合并此访问。
@@ -1105,7 +1111,8 @@ class mshr_table {
   void mark_ready(new_addr_type block_addr, bool &has_atomic);
   // Returns true if ready accesses exist
   //如果存在就绪访问，则返回true。m_current_response是就绪内存访问的列表。m_current_response仅
-  //存储了就绪内存访问的地址。
+  //存储了就绪内存访问的地址。如果存在已经被填入MSHR条目的访问，则返回true。MSHR的条目非空证明可
+  //以合并内存访问。
   bool access_ready() const { return !m_current_response.empty(); }
   // Returns next ready access
   //返回下一个就绪访问。
@@ -1451,6 +1458,11 @@ class baseline_cache : public cache_t {
   //模拟一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有
   //固定数量的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR
   //条目的数量和每个条目的最大请求数是可配置的。
+  //缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未
+  //命中处理逻辑将首先检查未命中状态保持寄存器（MSHR），以查看当前是否有来自先前请求的相同请求挂起。
+  //如果是，则此请求将合并到同一条目中，并且不需要发出新的数据请求。否则，将为该数据请求保留一个新的
+  //MSHR条目和缓存行。缓存状态处理程序可能会在资源不可用时失败，例如没有可用的MSHR条目、该集中的所
+  //有缓存块都已保留但尚未填充、未命中队列已满等。
   mshr_table m_mshrs;
   std::list<mem_fetch *> m_miss_queue;
   enum mem_fetch_status m_miss_queue_status;
