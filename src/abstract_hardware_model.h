@@ -1702,6 +1702,7 @@ class register_set {
     }
     return reg_id;
   }
+  //获取reg_id号寄存器的m_scheduler_id。
   unsigned get_schd_id(unsigned reg_id) {
     assert(not regs[reg_id]->empty());
     return regs[reg_id]->get_schd_id();
