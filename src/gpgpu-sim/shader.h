@@ -557,6 +557,8 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   simt_stack **m_simt_stack;
   // warp_inst_t** m_pipeline_reg;
   std::vector<shd_warp_t *> *m_warp;
+  //m_sp_out, m_sfu_out, m_mem_out是指向SP、SFU和Mem流水线接收的发射阶段和执行阶段之间的第一个
+  //流水线寄存器。
   //SP单元的发射出口。
   register_set *m_sp_out;
   //DP单元的发射出口。
@@ -3183,6 +3185,8 @@ class simt_core_cluster {
   void icnt_inject_request_packet(class mem_fetch *mf);
 
   // for perfect memory interface
+  //这里的response_queue指的是SIMT Core集群的响应FIFO。响应FIFO是ICNT->SIMT Core集群的数据包队列，
+  //该队列接收ICNT的内存请求。
   bool response_queue_full() {
     return (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size);
   }
