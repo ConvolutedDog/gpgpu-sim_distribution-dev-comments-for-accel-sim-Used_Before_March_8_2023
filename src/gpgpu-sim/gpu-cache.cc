@@ -703,7 +703,7 @@ void mshr_table::mark_ready(new_addr_type block_addr, bool &has_atomic) {
 
 /*
 Returns next ready access.
-返回下一个就绪访问。
+返回一个已经填入的就绪访问。
 */
 mem_fetch *mshr_table::next_access() {
   //access_ready()的功能是，如果存在就绪访问，则返回true。这里是假定存在就绪内存访问。
