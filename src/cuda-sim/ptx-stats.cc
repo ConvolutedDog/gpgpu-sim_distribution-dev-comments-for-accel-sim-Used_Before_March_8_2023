@@ -184,6 +184,7 @@ void ptx_file_line_stats_add_exec_count(const ptx_instruction *pInsn) {
       .exec_count += 1;
 }
 
+// 添加SASS指令的执行次数。yangjianchao16，20230829。
 void ptx_stats::sass_file_line_stats_add_exec_count(unsigned pc, unsigned active_count) {
   sass_inst_t sass_inst = find_sass_inst_by_pc(pc);
   if (!sass_inst.m_empty)
@@ -208,6 +209,7 @@ void ptx_stats::ptx_file_line_stats_add_latency(unsigned pc, unsigned latency) {
                                               pInsn->source_line())]
         .latency += latency;
 
+  // 添加SASS指令的执行延迟。yangjianchao16，20230829。
   sass_inst_t sass_inst = find_sass_inst_by_pc(pc);
   if (!sass_inst.m_empty)
     ptx_file_line_stats_tracker[ptx_file_line(sass_inst.source_file(),
@@ -226,6 +228,7 @@ void ptx_stats::ptx_file_line_stats_add_dram_traffic(unsigned pc,
                                               pInsn->source_line())]
         .dram_traffic += dram_traffic;
   
+  // 添加SASS指令的DRAM流量。yangjianchao16，20230829。
   sass_inst_t sass_inst = find_sass_inst_by_pc(pc);
   if (!sass_inst.m_empty)
     ptx_file_line_stats_tracker[ptx_file_line(sass_inst.source_file(),
@@ -248,6 +251,7 @@ void ptx_stats::ptx_file_line_stats_add_smem_bank_conflict(
     line_stats.smem_warp_count += 1;
   }
 
+  // 添加SASS指令的共享存储bank冲突次数。yangjianchao16，20230829。
   sass_inst_t sass_inst = find_sass_inst_by_pc(pc);
   if (!sass_inst.m_empty) {
     ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
@@ -271,6 +275,7 @@ void ptx_stats::ptx_file_line_stats_add_uncoalesced_gmem(unsigned pc,
     line_stats.gmem_warp_count += 1;
   }
 
+  // 添加SASS指令的非合并内存访问次数。yangjianchao16，20230829。
   sass_inst_t sass_inst = find_sass_inst_by_pc(pc);
   if (!sass_inst.m_empty) {
     ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
@@ -359,6 +364,7 @@ void ptx_stats::ptx_file_line_stats_add_warp_divergence(
       pInsn->source_file(), pInsn->source_line())];
   line_stats.warp_divergence += n_way_divergence;
   
+  // 添加SASS指令的warp divergence次数。yangjianchao16，20230829。
   sass_inst_t sass_inst = find_sass_inst_by_pc(pc);
   if (!sass_inst.m_empty) {
     ptx_file_line_stats &line_stats_ = ptx_file_line_stats_tracker[ptx_file_line(
