@@ -414,7 +414,13 @@ void function_info::create_basic_blocks() {
     if (pI->is_label()) {
       //如果pI是标签，代表它是代码块的首条指令，则直接将它压入leaders末端。
       leaders.push_back(pI);
-      //find_next_real_instruction 用于找到下一条非is_label()的指令。
+      //find_next_real_instruction 用于找到下一条非is_label()的指令，如果i指向的指令是label，
+      //就再i++。。其定义为：
+      //  std::list<ptx_instruction *>::iterator function_info::
+      //  find_next_real_instruction(std::list<ptx_instruction *>::iterator i) {
+      //    while ((i != m_instructions.end()) && (*i)->is_label()) i++;
+      //    return i;
+      //  }
       i = find_next_real_instruction(++i);
     } else {
       //如果pI不是标签，需要判断操作码。因为，bra、ret、exit、retp、break、call、callp 这些指
