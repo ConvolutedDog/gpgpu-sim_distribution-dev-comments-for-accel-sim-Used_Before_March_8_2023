@@ -1426,6 +1426,10 @@ class warp_inst_t : public inst_t {
     for (int i = (int)m_config->warp_size - 1; i >= 0; i--)
       fprintf(fp, "%c", ((m_warp_active_mask[i]) ? '1' : '0'));
   }
+
+  void print_sass_insn(FILE *fout) const;
+  void print_sass_insn_line(FILE *fout) const;
+
   bool active(unsigned thread) const { return m_warp_active_mask.test(thread); }
   unsigned active_count() const { return m_warp_active_mask.count(); }
   unsigned issued_count() const {
