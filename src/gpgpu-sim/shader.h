@@ -64,7 +64,10 @@
 #define PRINT_WRITE_BACK_PROCESS 0
 #define PRINT_EXECUTE_PROCESS 0
 
-
+/*
+source ./gpu-simulator/setup_environment.sh && make -j -C ./gpu-simulator/ && ./gpu-simulator/bin/release/accel-sim.out -trace ./hw_run/traces/device-1/11.0/wmma_tensorcore/NO_ARGS/traces/kernelslist.g -config ./gpu-simulator/gpgpu-sim/configs/tested-cfgs/SM75_RTX2080_Ti/gpgpusim.config -config ./gpu-simulator/configs/tested-cfgs/SM75_RTX2080_Ti/trace.config > tmp.txt
+source ./gpu-simulator/setup_environment.sh && make -j -C ./gpu-simulator/ && ./util/job_launching/run_simulations.py -B InstructionMonitor -C RTX2080Ti-SASS -T ./hw_run/traces/device-1/11.0/ -N myTest-202310031027 && ./util/job_launching/monitor_func_test.py -v -N myTest-202310031027
+*/
 /*************************************************************************************** tmp end   */
 
 /* READ_PACKET_SIZE:
