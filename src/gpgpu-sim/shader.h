@@ -59,6 +59,14 @@
 
 #define NO_OP_FLAG 0xFF
 
+/*************************************************************************************** tmp start */
+#define PRINT_PROCESS_SM_ID 0
+#define PRINT_WRITE_BACK_PROCESS 0
+#define PRINT_EXECUTE_PROCESS 0
+
+
+/*************************************************************************************** tmp end   */
+
 /* READ_PACKET_SIZE:
    bytes: 6 address (flit can specify chanel so this gives up to ~2GB/channel,
    so good for now), 2 bytes   [shaderid + mshrid](14 bits) + req_size(0-2 bits
@@ -1585,7 +1593,7 @@ class simd_function_unit {
   virtual bool stallable() const = 0;
   //打印SIMD单元的dispatch寄存器。
   virtual void print(FILE *fp) const {
-    fprintf(fp, "%s dispatch= ", m_name.c_str());
+    fprintf(fp, "        %s dispatch= ", m_name.c_str());
     m_dispatch_reg->print(fp);
   }
   //获取SIMD单元的名称。
@@ -1666,6 +1674,7 @@ class pipelined_simd_unit : public simd_function_unit {
       }
     }
   }
+  shader_core_ctx * get_shader_core() { return m_core; }
 
  protected:
   //流水线的深度。
