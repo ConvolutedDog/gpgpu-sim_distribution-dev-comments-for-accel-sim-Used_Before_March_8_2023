@@ -1183,6 +1183,13 @@ void baseline_cache::cycle() {
   if (!m_miss_queue.empty()) {
     mem_fetch *mf = m_miss_queue.front();
     if (!m_memport->full(mf->size(), mf->get_is_write())) {
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_sm_id() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("      * cache %s 's m_miss_queue is not empty, and m_memport is not full, "
+              "just send m_miss_queue.front() to the next level of memory.\n", get_name().c_str());
+      }
+      /*************************************************************************************** tmp end   */
       m_miss_queue.pop_front();
       //mem_fetch_interface是对mem访存的接口。
       m_memport->push(mf);
