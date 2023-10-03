@@ -568,7 +568,7 @@ void shader_core_ctx::create_exec_pipeline() {
   //   "INT,OC_EX_SFU,OC_EX_MEM,EX_WB,ID_OC_TENSOR_CORE,OC_EX_TENSOR_CORE",
   //   "1,1,1,1,1,1,1,1,1,1,1,1,1");
   //在V100中配置为：-gpgpu_pipeline_widths 4,4,4,4,4,4,4,4,4,4,8,4,4
-  //结果总线的宽度是1，即m_config->pipe_widths[EX_WB] = 8。
+  //结果总线的宽度是8，即m_config->pipe_widths[EX_WB] = 8。
   num_result_bus = m_config->pipe_widths[EX_WB];
   for (unsigned i = 0; i < num_result_bus; i++) {
     this->m_result_bus.push_back(new std::bitset<MAX_ALU_LATENCY>());
@@ -2388,6 +2388,14 @@ void shader_core_ctx::execute() {
     *(m_result_bus[i]) >>= 1;
   }
   for (unsigned n = 0; n < m_num_function_units; n++) {
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("    * now executing the SM-%d / %d-th function unit, "
+             "the name of the function unit is: %s\n",
+             m_sid, n, m_fu[n]->get_name());
+    }
+    /*************************************************************************************** tmp end   */
     //m_fu是SIMD功能单元的向量，m_num_function_units是SIMD功能单元的数量。m_fu包含：
     //  4个SP单元，4个DP单元，4个INT单元，4个SFU单元，4个TC单元，多个或零个specialized_unit，
     //  1个LD/ST单元。
@@ -2430,6 +2438,23 @@ void shader_core_ctx::execute() {
     if (partition_issue) {
       reg_id = m_fu[n]->get_issue_reg_id();
     }
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      std::string issue_port_str;
+      switch(issue_port) {
+        case OC_EX_SP: issue_port_str = "OC_EX_SP";
+        case OC_EX_DP: issue_port_str = "OC_EX_DP";
+        case OC_EX_INT: issue_port_str = "OC_EX_INT";
+        case OC_EX_SFU: issue_port_str = "OC_EX_SFU";
+        case OC_EX_MEM: issue_port_str = "OC_EX_MEM";
+        case OC_EX_TENSOR_CORE: issue_port_str = "OC_EX_TENSOR_CORE";
+        default: issue_port_str = "OC_EX_SPEC_ID";
+      }
+      printf("      * the %d-th function unit %s's issue port is %s, issue reg id is %d\n", 
+             n, m_fu[n]->get_name(), issue_port_str.c_str(), reg_id);
+    }
+    /*************************************************************************************** tmp end   */
     //返回m_fu[n]单元的流水线寄存器m_pipeline_reg[issue_port]中的指令寄存器集合issue_inst
     //的第reg_id个。
     warp_inst_t **ready_reg = issue_inst.get_ready(partition_issue, reg_id);
@@ -2438,7 +2463,25 @@ void shader_core_ctx::execute() {
         //返回**ready_reg指令的return m_dispatch_reg->empty()，即判断m_dispatch_reg是否
         //为空。
         m_fu[n]->can_issue(**ready_reg)) {
-      //LDST单元返回true，其余返回false。
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        std::string issue_port_str;
+        switch(issue_port) {
+          case OC_EX_SP: issue_port_str = "OC_EX_SP";
+          case OC_EX_DP: issue_port_str = "OC_EX_DP";
+          case OC_EX_INT: issue_port_str = "OC_EX_INT";
+          case OC_EX_SFU: issue_port_str = "OC_EX_SFU";
+          case OC_EX_MEM: issue_port_str = "OC_EX_MEM";
+          case OC_EX_TENSOR_CORE: issue_port_str = "OC_EX_TENSOR_CORE";
+          default: issue_port_str = "OC_EX_SPEC_ID";
+        }
+        printf("      * There is valid insn in m_pipeline_reg[%s][%d] and m_dispatch_reg of the "
+               "%d-th function unit %s is empty, and its occupied bitset is not set for latency "
+               "of this valid insn.\n", issue_port_str.c_str(), reg_id, n, m_fu[n]->get_name());
+      }
+      /*************************************************************************************** tmp end   */
+      //m_fu[n]->stallable()：LDST单元返回true，其余返回false。
       bool schedule_wb_now = !m_fu[n]->stallable();
       int resbus = -1;
       if (schedule_wb_now &&
@@ -2446,21 +2489,40 @@ void shader_core_ctx::execute() {
           //test_res_bus() function locates a free slot in all the result buses (the 
           //slot is free if its bit is not set).
           //test_res_bus函数在所有结果总线中定位一个空闲插槽（如果未设置其位，则该插槽为空
-          //闲插槽)。实际上test_res_bus()函数模拟的是指令延迟，但是指令延迟已经在发射阶段
-          //模拟过了，所以这里(*ready_reg)->latency返回的是个固定值1。
+          //闲插槽)。实际上test_res_bus()函数模拟的是指令延迟。
           (resbus = test_res_bus((*ready_reg)->latency)) != -1) {
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * Not LD/ST unit, and there is a free slot in result bus, whose latency is %d, "
+                 "issue this insn to the m_dispatch_reg to the %s function unit and set occupied bitset.\n", 
+                 (*ready_reg)->latency, m_fu[n]->get_name());
+        }
+        /*************************************************************************************** tmp end   */
         assert((*ready_reg)->latency < MAX_ALU_LATENCY);
-        //m_result_bus实际上是模拟指令延迟，但是指令延迟已经在发射阶段模拟过了，所以这里
-        //(*ready_reg)->latency返回的是个固定值1，因此这里始终执行的是：
-        //    m_result_bus[resbus]->set(1)。
+        //m_result_bus实际上是模拟指令延迟。
         m_result_bus[resbus]->set((*ready_reg)->latency);
         //执行simd_function_unit::issue(register_set &source_reg)函数。
         m_fu[n]->issue(issue_inst);
       } else if (!schedule_wb_now) {
         //LDST单元走这里。
         m_fu[n]->issue(issue_inst);
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * LD/ST unit, directly issue this insn, whose latency is %d, to the m_dispatch_reg "
+                 "to the %s function unit and set occupied bitset.\n", (*ready_reg)->latency, m_fu[n]->get_name());
+        }
+        /*************************************************************************************** tmp end   */
       } else {
         // stall issue (cannot reserve result bus)
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * Not LD/ST unit, No free slot in result bus, whose latency is %d.\n", 
+                 (*ready_reg)->latency);
+        }
+        /*************************************************************************************** tmp end   */
       }
     }
   }
@@ -2513,6 +2575,53 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
+void warp_inst_t::print_sass_insn(FILE *fout) const {
+  if (empty()) {
+    fprintf(fout, "bubble\n");
+    return;
+  } else
+    fprintf(fout, "        * insn 0x%04x ", pc);
+  fprintf(fout, "w%02d[", m_warp_id);
+  for (unsigned j = 0; j < m_config->warp_size; j++)
+    fprintf(fout, "%c", (active(j) ? '1' : '0'));
+  fprintf(fout, "]: \n");
+  fprintf(fout, "        * src regs: ");
+  for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+    int reg_num = arch_reg.src[op];
+    if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  }
+  fprintf(fout, "\n");
+  fprintf(fout, "        * dst regs: ");
+  for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+    int reg_num = arch_reg.dst[op];
+    if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  }
+  fprintf(fout, "\n");
+}
+
+void warp_inst_t::print_sass_insn_line(FILE *fout) const {
+  if (empty()) {
+    fprintf(fout, "bubble\n");
+    return;
+  } else
+    fprintf(fout, "        * insn 0x%04x ", pc);
+  fprintf(fout, "w%02d[", m_warp_id);
+  for (unsigned j = 0; j < m_config->warp_size; j++)
+    fprintf(fout, "%c", (active(j) ? '1' : '0'));
+  fprintf(fout, "]: ");
+  fprintf(fout, "src regs: ");
+  for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+    int reg_num = arch_reg.src[op];
+    if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  }
+  fprintf(fout, "dst regs: ");
+  for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+    int reg_num = arch_reg.dst[op];
+    if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  }
+  fprintf(fout, "\n");
+}
+
 /*
 流水线的写回阶段。将执行阶段的结果写回到寄存器文件中。首先，EX_WB寄存器组中的就绪槽被识别并加
 载到preg。如果有效，则调用m_operated_collector.writeback。然后，目标寄存器从记分板上释放，
@@ -2535,6 +2644,18 @@ void shader_core_ctx::writeback() {
   warp_inst_t *pipe_reg = (preg == NULL) ? NULL : *preg;
   
   while (preg and !pipe_reg->empty()) {
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        m_sid == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+      printf("    * now start the SM-%d write back operation:\n", m_sid);
+      printf("      * there are valid registers in m_pipeline_reg[EX_WB], "
+             "the register belongs to inst warp %d, get_schd_id %d, uid = %d, "
+             "start write back operation of m_operand_collector: \n",
+             pipe_reg->warp_id(), pipe_reg->get_schd_id(), pipe_reg->get_uid());
+      pipe_reg->print_sass_insn(stdout);
+    }
+    /*************************************************************************************** tmp end   */
+
     /*
      * Right now, the writeback stage drains all waiting instructions
      * assuming there are enough ports in the register file or the
@@ -2566,6 +2687,12 @@ void shader_core_ctx::writeback() {
     unsigned warp_id = pipe_reg->warp_id();
     // release the register from the scoreboard.
     m_scoreboard->releaseRegisters(pipe_reg);
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+      m_sid == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+      printf("      * release the pipe_reg's registers from the scoreboard.\n");
+    }
+    /*************************************************************************************** tmp end   */
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
     m_gpu->gpu_sim_insn_last_update_sid = m_sid;
@@ -2577,6 +2704,12 @@ void shader_core_ctx::writeback() {
     //任务。
     preg = m_pipeline_reg[EX_WB].get_ready();
     pipe_reg = (preg == NULL) ? NULL : *preg;
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+      m_sid == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+      printf("      * put new register that needs write back to pipe_reg, cause need do write back operation for every reg in m_pipeline_reg[EX_WB].\n\n");
+    }
+    /*************************************************************************************** tmp end   */
   }
 }
 
@@ -3256,13 +3389,69 @@ void pipelined_simd_unit::cycle() {
     assert(active_insts_in_pipeline > 0);
     //m_pipeline_reg[0]中的指令移出后，流水线中的活跃指令数减1。
     active_insts_in_pipeline--;
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * the SM-%d function unit [%s]'s m_pipeline_reg[0] is not empty, "
+             "so put it to the m_result_port,  and active_insts_in_pipeline--.\n",
+             get_shader_core()->get_sid(), get_name());
+      printf("      * %s dispatch status: \n", get_name());
+      for (int s = m_pipeline_depth - 1; s >= 0; s--) {
+        if (!m_pipeline_reg[s]->empty()) {
+          printf("            %s[%2d]: ", m_name.c_str(), s);
+          // m_pipeline_reg[s]->print(fp);
+          m_pipeline_reg[s]->print_sass_insn_line(stdout);
+        }
+        else printf("            %s[%2d]: NULL\n", m_name.c_str(), s);
+      }
+    }
+    /*************************************************************************************** tmp end   */
   }
+  /*************************************************************************************** tmp start */
+  else {
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * the SM-%d function unit [%s]'s m_pipeline_reg[0] is empty, "
+             "so do not put m_pipeline_reg[i]=NULL to the m_result_port.\n",
+             get_shader_core()->get_sid(), get_name());
+    }
+  }
+  /*************************************************************************************** tmp end   */
   // move warp_inst_t through out the pipeline
   //m_pipeline_reg流水线寄存器集中的所有指令向前推进一槽，模拟一拍的执行。
   if (active_insts_in_pipeline) {
-    for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * there still has active_insts_in_pipeline, "
+             "so do move of m_pipeline_reg[x+1] -> m_pipeline_reg[x] and occupied >>= 1: \n        * ");
+    }
+    /*************************************************************************************** tmp end   */
+    for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++) {
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("%d->%d, ", stage + 1, stage);
+      }
+      /*************************************************************************************** tmp end   */
+    }
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("\n");
+    }
+    /*************************************************************************************** tmp end   */
   }
+  /*************************************************************************************** tmp start */
+  else {
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * there has not active_insts_in_pipeline, "
+             "so do not move of m_pipeline_reg[x+1] -> m_pipeline_reg[x].\n");
+    }
+  }
+  /*************************************************************************************** tmp end   */
   // If the dispatch_reg is not empty
   //如果dispatch_reg不为空，则将其移入m_pipeline_reg流水线。
   //具体移入哪个位置，要用指令延迟减去在m_dispatch_reg中的初始间隔，这个初始间隔是依据指令的吞吐量设置的。
@@ -3277,6 +3466,15 @@ void pipelined_simd_unit::cycle() {
       move_warp(m_pipeline_reg[start_stage], m_dispatch_reg);
       //指令移入m_pipeline_reg后，流水线中的活跃指令数减1。
       active_insts_in_pipeline++;
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("      * m_dispatch_reg is not empty and dispatch_delay reduces to zero, "
+               "remaining execution time = latency[%d] - initiation_interval[%d] = %d cycles.\n",
+               m_dispatch_reg->latency, m_dispatch_reg->initiation_interval, start_stage);
+        printf("        * move m_dispatch_reg -> m_pipeline_reg[%d], and active_insts_in_pipeline++.\n", start_stage);
+      }
+      /*************************************************************************************** tmp end   */
     }
   }
   //m_dispatch_reg的标识占用位图的状态右移一位，模拟一拍的推进。
@@ -3427,17 +3625,44 @@ void ldst_unit::issue(register_set &reg_set) {
 LDST单元的写回操作。
 */
 void ldst_unit::writeback() {
+  /*************************************************************************************** tmp start */
+  if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+      get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+    printf("      * do write back operation of LDST unit.\n");
+  }
+  /*************************************************************************************** tmp end   */
   // process next instruction that is going to writeback
   //下一条需要写回的指令。
   if (!m_next_wb.empty()) {
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("        * next instruction in m_next_wb that is going to writeback is not empty, "
+             "m_operand_collector try to writeback it.\n");
+    }
+    /*************************************************************************************** tmp end   */
     //操作数收集器的Bank写回，返回true；Bank冲突时返回false。
     if (m_operand_collector->writeback(m_next_wb)) {
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("        * m_operand_collector has allocated banks for all out regs' writes, "
+               "cause there are not bank confilicts.\n");
+      }
+      /*************************************************************************************** tmp end   */
       bool insn_completed = false;
       //对该条指令m_next_wb的所有目的寄存器循环。
       for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
         if (m_next_wb.out[r] > 0) {
           //检查指令写回的地址是否是共享内存空间。
           if (m_next_wb.space.get_type() != shared_space) {
+            /*************************************************************************************** tmp start */
+            if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+                get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+              printf("          * the space of %d-th out reg in warp-%d is not shared_space.\n", 
+                     r, m_next_wb.warp_id());
+            }
+            /*************************************************************************************** tmp end   */
             //指令写回的地址不是共享内存空间。
             assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] > 0);
             //这里的m_pending_writes是一个二维数组，第一维索引是warp_id，第二维索引是寄存器ID，值是该寄
@@ -3449,6 +3674,14 @@ void ldst_unit::writeback() {
             //如果该挂起写入次数已经减为0，则说明已经没有挂起的写入，该寄存器所在的m_pending_writes中的表
             //项可以被释放，该寄存器也应该从计分板中释放。
             if (!still_pending) {
+              /*************************************************************************************** tmp start */
+              if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+                  get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+                printf("          * the %d-th out reg in warp-%d has no still pending writes, "
+                       "just erase the m_pending_writes items, and release register in m_scoreboard.\n", 
+                       r, m_next_wb.warp_id());
+              }
+              /*************************************************************************************** tmp end   */
               m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
               m_scoreboard->releaseRegister(m_next_wb.warp_id(),
                                             m_next_wb.out[r]);
@@ -3456,6 +3689,14 @@ void ldst_unit::writeback() {
               insn_completed = true;
             }
           } else {  // shared
+            /*************************************************************************************** tmp start */
+            if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+                get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+              printf("          * the space of %d-th out reg in warp-%d is shared_space, "
+                     "just release register in m_scoreboard.\n", 
+                     r, m_next_wb.warp_id());
+            }
+            /*************************************************************************************** tmp end   */
             //指令写回的地址是共享内存空间，没有寄存器参与，这时候直接从计分板中释放该寄存器即可。
             m_scoreboard->releaseRegister(m_next_wb.warp_id(),
                                           m_next_wb.out[r]);
@@ -3467,11 +3708,36 @@ void ldst_unit::writeback() {
       if (insn_completed) {
         m_core->warp_inst_complete(m_next_wb);
       }
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("        * set next instruction in m_next_wb that is going to writeback to empty, "
+               "so will find a new instruction that needs writeback into it later.\n");
+      }
+      /*************************************************************************************** tmp end   */
       m_next_wb.clear();
       m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
       m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
     }
+    /*************************************************************************************** tmp start */
+    else {
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("        * m_operand_collector has not allocate banks for all out regs' writes, "
+               "cause there are some bank confilicts.\n");
+      }
+    }
+    /*************************************************************************************** tmp end   */
   }
+  /*************************************************************************************** tmp start */
+  else {
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("        * next instruction in m_next_wb that is going to writeback is empty, "
+             "so do find a new instruction that needs writeback into it.\n");
+    }
+  }
+  /*************************************************************************************** tmp end   */
 
   unsigned serviced_client = -1;
   //m_num_writeback_clients = 5：
@@ -3483,12 +3749,26 @@ void ldst_unit::writeback() {
   //下面是获取下一个需要写回的指令。这里轮询查找上述5个client，从中选择一条需写回的指令。
   for (unsigned c = 0; m_next_wb.empty() && (c < m_num_writeback_clients);
        c++) {
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("        * next instruction in m_next_wb that is going to writeback is still empty, "
+             "so do find a new instruction that needs writeback into it.\n");
+    }
+    /*************************************************************************************** tmp end   */
     //m_writeback_arb是一个计数器，用于轮询查找下一个需要写回的指令。下一个查找的单元是next_client。
     unsigned next_client = (c + m_writeback_arb) % m_num_writeback_clients;
     switch (next_client) {
       case 0:  // shared memory
         //直接判断流水线寄存器即可。
         if (!m_pipeline_reg[0]->empty()) {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("          * cause m_pipeline_reg[0]/shared memory is not empty, "
+                   "just put m_pipeline_reg[0] into m_next_wb.\n");
+          }
+          /*************************************************************************************** tmp end   */
           m_next_wb = *m_pipeline_reg[0];
           if (m_next_wb.isatomic()) {
             m_next_wb.do_atomic();
@@ -3502,6 +3782,13 @@ void ldst_unit::writeback() {
         break;
       case 1:  // texture response
         if (m_L1T->access_ready()) {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("          * cause m_L1T's nect access is not empty, "
+                   "just put m_L1T->next_access() into m_next_wb.\n");
+          }
+          /*************************************************************************************** tmp end   */
           //获取下一个访问的纹理指令。
           mem_fetch *mf = m_L1T->next_access();
           m_next_wb = mf->get_inst();
@@ -3511,6 +3798,13 @@ void ldst_unit::writeback() {
         break;
       case 2:  // const cache response
         if (m_L1C->access_ready()) {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("          * cause m_L1C's nect access is not empty, "
+                   "just put m_L1C->next_access() into m_next_wb.\n");
+          }
+          /*************************************************************************************** tmp end   */
           //获取下一个访问的常量缓存指令。
           mem_fetch *mf = m_L1C->next_access();
           m_next_wb = mf->get_inst();
@@ -3520,6 +3814,13 @@ void ldst_unit::writeback() {
         break;
       case 3:  // global/local
         if (m_next_global) {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("          * cause global memory's nect access insn is not empty, "
+                   "just put m_next_global->get_inst() into m_next_wb.\n");
+          }
+          /*************************************************************************************** tmp end   */
           //获取下一个访问的全局内存指令。
           m_next_wb = m_next_global->get_inst();
           if (m_next_global->isatomic()) {
@@ -3534,6 +3835,13 @@ void ldst_unit::writeback() {
         break;
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("          * cause m_L1D's nect access insn is not empty, "
+                   "just put m_L1D->next_access() into m_next_wb.\n");
+          }
+          /*************************************************************************************** tmp end   */
           //获取下一个访问的数据缓存指令。
           mem_fetch *mf = m_L1D->next_access();
           m_next_wb = mf->get_inst();
@@ -3573,17 +3881,49 @@ void ldst_unit::cycle() {
   //  m_operand_collector->step();
   //m_pipeline_reg是一个数组，该数组的大小模拟流水线的深度m_pipeline_depth，每个元素是一个warp_inst_t类
   //型的指针。这里是m_pipeline_reg流水线寄存器集中的所有指令向前推进一槽，模拟一拍的执行。
-  for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
-    if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
+  /*************************************************************************************** tmp start */
+  if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+      get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+    printf("      * do move of m_pipeline_reg[x+1] -> m_pipeline_reg[x]: \n        * ");
+  }
+  /*************************************************************************************** tmp end   */
+  for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++) {
+    if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty()) {
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("%d->%d, ", stage + 1, stage);
+      }
+      /*************************************************************************************** tmp end   */
+    }
+  }
+  /*************************************************************************************** tmp start */
+  if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+      get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+    printf("\n");
+  }
+  /*************************************************************************************** tmp end   */
 
   //如果LDST单元的数据响应FIFO不为空。
   if (!m_response_fifo.empty()) {
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * m_response_fifo in LDST unit is not empty, just check the first mem_fetch packet mf in it.\n");
+    }
+    /*************************************************************************************** tmp end   */
     //获取FIFO中的第一个mem_fetch指针。
     mem_fetch *mf = m_response_fifo.front();
     if (mf->get_access_type() == TEXTURE_ACC_R) {
       //如果该访存mem是纹理访存读，则判断纹理缓存是否有空闲的填充端口。
       if (m_L1T->fill_port_free()) {
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * mf is TEXTURE_ACC_R, and m_L1T->fill_port_free() is true, just fill it into m_L1T.\n");
+        }
+        /*************************************************************************************** tmp end   */
         //如果存在空闲的填充端口，则将该mem_fetch指针mf中的指令移入纹理缓存。
         m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
                             m_core->get_gpu()->gpu_tot_sim_cycle);
@@ -3592,6 +3932,12 @@ void ldst_unit::cycle() {
     } else if (mf->get_access_type() == CONST_ACC_R) {
       //如果该访存mem是常量访存读，则判断常量缓存是否有空闲的填充端口。
       if (m_L1C->fill_port_free()) {
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * mf is CONST_ACC_R, and m_L1C->fill_port_free() is true, just fill it into m_L1C.\n");
+        }
+        /*************************************************************************************** tmp end   */
         mf->set_status(IN_SHADER_FETCHED,
                        m_core->get_gpu()->gpu_sim_cycle +
                            m_core->get_gpu()->gpu_tot_sim_cycle);
@@ -3610,6 +3956,12 @@ void ldst_unit::cycle() {
       if (mf->get_type() == WRITE_ACK ||
           //m_config->gpgpu_perfect_mem在V100配置中默认为0。
           (m_config->gpgpu_perfect_mem && mf->get_is_write())) {
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * mf is WRITE_ACK, just execute m_core->store_ack(mf).\n");
+        }
+        /*************************************************************************************** tmp end   */
         //如果该访存mem是写响应，执行Shader Core（SM）对写确认的动作，减少mf所属warp的已发送但尚未收到
         //写确认的存储请求数。
         m_core->store_ack(mf);
@@ -3634,7 +3986,19 @@ void ldst_unit::cycle() {
         }
         //所以只有在使用ld.cg时才会绕过L1数据缓存。
         if (bypassL1D) {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("        * mf is cache at global level (.cg), the data access bypass the L1D cache.\n");
+          }
+          /*************************************************************************************** tmp end   */
           if (m_next_global == NULL) {
+            /*************************************************************************************** tmp start */
+            if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+                get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+              printf("          * m_next_global is NULL, just put mf into m_next_global.\n");
+            }
+            /*************************************************************************************** tmp end   */
             //m_next_global是下一次访问全局存储的mf，如果它空闲，则m_next_global = mf，空闲的话就无法
             //继续放出该次访问。
             mf->set_status(IN_SHADER_FETCHED,
@@ -3643,7 +4007,22 @@ void ldst_unit::cycle() {
             m_response_fifo.pop_front();
             m_next_global = mf;
           }
+          /*************************************************************************************** tmp start */
+          else {
+            if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+                get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+              printf("          * m_next_global is not NULL, "
+                     "so do no operation and wait until m_next_global becomes NULL.\n");
+            }
+          }
+          /*************************************************************************************** tmp end   */
         } else {
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("        * mf is normal m_L1D access, and m_L1D->fill_port_free() is true, just fill it into m_L1D.\n");
+          }
+          /*************************************************************************************** tmp end   */
           //如果不绕过L1数据缓存，就需要将mf写入L1数据缓存的端口。
           if (m_L1D->fill_port_free()) {
             m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
@@ -3654,6 +4033,14 @@ void ldst_unit::cycle() {
       }
     }
   }
+  /*************************************************************************************** tmp start */
+  else {
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * m_response_fifo in LDST unit is empty, cannot do any operation.\n");
+    }
+  }
+  /*************************************************************************************** tmp end   */
 
   //L1纹理缓存向前推进一拍。
   m_L1T->cycle();
@@ -3702,16 +4089,48 @@ void ldst_unit::cycle() {
   //如果前面没有发生Stall且pipe_reg非空。
   if (!pipe_reg.empty()) {
     unsigned warp_id = pipe_reg.warp_id();
+    /*************************************************************************************** tmp start */
+    if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+        get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+      printf("      * pipe_reg(m_dispatch_reg) is not empty, warp id: %d.\n", warp_id);
+    }
+    /*************************************************************************************** tmp end   */
     //如果pipe_reg是load指令。
     if (pipe_reg.is_load()) {
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("        * pipe_reg(m_dispatch_reg) is load insn.\n");
+      }
+      /*************************************************************************************** tmp end   */
       if (pipe_reg.space.get_type() == shared_space) {
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("          * pipe_reg(m_dispatch_reg) is load insn of shared_space, "
+                 "so check m_pipeline_reg[smem_latency-1], if empty, move from pipe_reg to m_pipeline_reg.\n");
+        }
+        /*************************************************************************************** tmp end   */
         //如果pipe_reg是shared memory空间的load指令。
         if (m_pipeline_reg[m_config->smem_latency - 1]->empty()) {
           // new shared memory request
           move_warp(m_pipeline_reg[m_config->smem_latency - 1], m_dispatch_reg);
           m_dispatch_reg->clear();
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+            printf("          * m_pipeline_reg[smem_latency-1] is empty, move from pipe_reg to m_pipeline_reg.\n");
+          }
+          /*************************************************************************************** tmp end   */
         }
       } else {
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("          * pipe_reg(m_dispatch_reg) is load insn of not shared_space, "
+                 "so check if there are pending requests of insn's out regs.\n");
+        }
+        /*************************************************************************************** tmp end   */
         // if( pipe_reg.active_count() > 0 ) {
         //    if( !m_operand_collector->writeback(pipe_reg) )
         //        return;
@@ -3725,6 +4144,13 @@ void ldst_unit::cycle() {
                 m_pending_writes[warp_id].end()) {
               // this instruction has pending register writes
               if (m_pending_writes[warp_id][reg_id] > 0) {
+                /*************************************************************************************** tmp start */
+                if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+                    get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+                  printf("            * there are pending requests of insn's %d-th out regs, reg_num: %d.\n", 
+                         r, reg_id);
+                }
+                /*************************************************************************************** tmp end   */
                 pending_requests = true;
                 break;
               } else {
@@ -3738,16 +4164,40 @@ void ldst_unit::cycle() {
           //如果该指令没有挂起的写入，则该指令执行完毕。
           m_core->warp_inst_complete(*m_dispatch_reg);
           m_scoreboard->releaseRegisters(m_dispatch_reg);
+          /*************************************************************************************** tmp start */
+          if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+              get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+            printf("      * there are not pending requests, release the pipe_reg's registers from the scoreboard.\n");
+          }
+          /*************************************************************************************** tmp end   */
         }
         m_core->dec_inst_in_pipeline(warp_id);
         m_dispatch_reg->clear();
+        /*************************************************************************************** tmp start */
+        if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+            get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+          printf("        * erase the m_dispatch_reg.\n");
+        }
+        /*************************************************************************************** tmp end   */
       }
     } else {
       //如果pipe_reg不是load指令，则执行完毕。
       // stores exit pipeline here
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("        * pipe_reg(m_dispatch_reg) is not load insn, just executing completed.\n");
+      }
+      /*************************************************************************************** tmp end   */
       m_core->dec_inst_in_pipeline(warp_id);
       m_core->warp_inst_complete(*m_dispatch_reg);
       m_dispatch_reg->clear();
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("        * erase the m_dispatch_reg.\n");
+      }
+      /*************************************************************************************** tmp end   */
     }
   }
 }
@@ -4047,6 +4497,8 @@ void warp_inst_t::print(FILE *fout) const {
   m_config->gpgpu_ctx->func_sim->ptx_print_insn(pc, fout);
   fprintf(fout, "\n");
 }
+
+
 void shader_core_ctx::incexecstat(warp_inst_t *&inst)
 {
     // Latency numbers for next operations are used to scale the power values
@@ -4492,6 +4944,12 @@ void shader_core_config::set_pipeline_latency() {
 Shader Core/SIMT Core向前推进一个时钟周期。
 */
 void shader_core_ctx::cycle() {
+  /*************************************************************************************** tmp start */
+  if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle < 100 && */
+    m_sid == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+    printf("** Now SM-%d starts to run... at gpgpusim_cycle %llu\n", m_sid, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  }
+  /*************************************************************************************** tmp end   */
   //如果这个SIMT Core处于非活跃状态，且已经执行完成，时钟周期不向前推进。
   if (!isactive() && get_not_completed() == 0) return;
 
@@ -4512,6 +4970,12 @@ void shader_core_ctx::cycle() {
     decode();
     fetch();
   }
+  /*************************************************************************************** tmp start */
+  if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle < 100 && */
+    m_sid == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+    printf("** Now SM-%d exits... at gpgpusim_cycle %llu\n", m_sid, m_sid, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  }
+  /*************************************************************************************** tmp end   */
 }
 
 // Flushes all content of the cache to memory
@@ -5377,11 +5841,26 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
   for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
     int reg_num = inst.arch_reg.dst[op];  // this math needs to match that used
                                           // in function_info::ptx_decode_inst
+    /*************************************************************************************** tmp start */
+    if (/* shader_core()->get_gpu()->gpu_sim_cycle + shader_core()->get_gpu()->gpu_tot_sim_cycle && */ 
+        shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+      if (reg_num >= 0)
+        printf("        * reg num of the %d-th reg>=0 is True , so write back this reg.\n", op);
+      // else
+      //   printf("        * reg num of the %d-th reg>=0 is False, so do not write back this reg.\n", op);
+    }
+    /*************************************************************************************** tmp end   */
     if (reg_num >= 0) {                   // valid register
       //m_bank_warp_shift被初始化为5。
       unsigned bank = register_bank(reg_num, inst.warp_id(), m_num_banks,
                                     m_bank_warp_shift, sub_core_model,
                                     m_num_banks_per_sched, inst.get_schd_id());
+      /*************************************************************************************** tmp start */
+      if (/* shader_core()->get_gpu()->gpu_sim_cycle + shader_core()->get_gpu()->gpu_tot_sim_cycle && */ 
+          shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+        printf("          * prepare to write back the %d-th dst_reg, the reg num is: %d, it is in bank: %d.: \n", op, reg_num, bank);
+      }
+      /*************************************************************************************** tmp end   */
       if (m_arbiter.bank_idle(bank)) {
         //写回到寄存器Bank。
         //m_bank_warp_shift被初始化为5。
@@ -5390,11 +5869,27 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
             op_t(&inst, reg_num, m_num_banks, m_bank_warp_shift, sub_core_model,
                  m_num_banks_per_sched, inst.get_schd_id()));
         inst.arch_reg.dst[op] = -1;
+        /*************************************************************************************** tmp start */
+        if (/* shader_core()->get_gpu()->gpu_sim_cycle + shader_core()->get_gpu()->gpu_tot_sim_cycle && */ 
+            shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+          printf("          * the status of bank-%d is NO_ALLOC,  so start the write back operation of the "
+                 "%d-th dst_reg (reg num: %d)\n", bank, op, reg_num);
+          printf("          * set the status of bank-%d to be WRITE_ALLOC.\n", bank);
+        }
+        /*************************************************************************************** tmp end   */
       } else {
+        /*************************************************************************************** tmp start */
+        if (/* shader_core()->get_gpu()->gpu_sim_cycle + shader_core()->get_gpu()->gpu_tot_sim_cycle && */ 
+            shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
+          printf("          * the status of bank-%d is not NO_ALLOC, so stop the write back operation of the "
+                 "%d-th dst_reg (reg num: %d)\n", bank, op, reg_num);
+        }
+        /*************************************************************************************** tmp end   */
         return false;
       }
     }
   }
+  
   for (unsigned i = 0; i < (unsigned)regs.size(); i++) {
     //在V100配置中，gpgpu_clock_gated_reg_file默认为0。
     if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
@@ -5850,7 +6345,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 }
 
 /*
-simt_core_cluster即SIMT Core集群向前推进一个时钟周期。
+simt_core_cluster即SIMT Core集群向前推进一个时钟周期。在V100配置中，每个集群内部仅有1个SIMT Core。
 */
 void simt_core_cluster::core_cycle() {
   //对SIMT Core集群中的每一个单独的SIMT Core循环。
