@@ -1438,6 +1438,9 @@ class baseline_cache : public cache_t {
     m_tag_array->fill(addr, time, mask, byte_mask, true);
   }
 
+  int get_sm_id() const { return sm_id; }
+  std::string get_name() const { return m_name; }
+
  protected:
   // Constructor that can be used by derived classes with custom tag arrays
   baseline_cache(const char *name, cache_config &config, int core_id,
@@ -1451,6 +1454,7 @@ class baseline_cache : public cache_t {
   }
 
  protected:
+  int sm_id;
   std::string m_name;
   cache_config &m_config;
   tag_array *m_tag_array;
