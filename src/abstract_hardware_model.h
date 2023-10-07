@@ -1429,6 +1429,7 @@ class warp_inst_t : public inst_t {
 
   void print_sass_insn(FILE *fout) const;
   void print_sass_insn_line(FILE *fout) const;
+  void print_sass_insn_line_tmp(FILE *fout, unsigned warp_id, address_type pc) const;
 
   bool active(unsigned thread) const { return m_warp_active_mask.test(thread); }
   unsigned active_count() const { return m_warp_active_mask.count(); }
