@@ -1142,6 +1142,13 @@ void shader_core_ctx::fetch() {
       m_inst_fetch_buffer =
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
                           mf->get_access_size(), mf->get_wid());
+      /*************************************************************************************** tmp start */
+      if (PRINT_FETCH_STALL) {
+        printf("Start cycle[%llu]: SM-%d/wid-%d fetch an insn from L1I, insn pc[0x%04x].\n", 
+               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_sid, mf->get_wid(), m_warp[mf->get_wid()]->get_pc());
+        // fflush(stdout);
+      }
+      /*************************************************************************************** tmp end   */
       assert(m_warp[mf->get_wid()]->get_pc() ==
              (mf->get_addr() -
               PROGRAM_MEM_START));  // Verify that we got the instruction we
@@ -1288,6 +1295,13 @@ void shader_core_ctx::fetch() {
             m_last_warp_fetched = warp_id;
             m_warp[warp_id]->set_imiss_pending();
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
+            /*************************************************************************************** tmp start */
+            if (PRINT_FETCH_STALL) {
+              printf("Stall cycle[%llu]: Fetch, SM-%d/wid-%d read miss an insn from L1I, insn pc[0x%04x]:\n", 
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_sid, mf->get_wid(), m_warp[mf->get_wid()]->get_pc());
+              // fflush(stdout);
+            }
+            /*************************************************************************************** tmp end   */
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
             //将pc值对应的指令放入m_inst_fetch_buffer。这里要再次说明下m_inst_fetch_buffer与
@@ -1295,12 +1309,26 @@ void shader_core_ctx::fetch() {
             //流水线寄存器；而每个shd_warp_t都有一组m_ibuffer的I-Buffer条目(ibuffer_entry)，
             //持有可配置的指令数量（一个周期内允许获取的最大指令）。
             m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
+            /*************************************************************************************** tmp start */
+            if (PRINT_FETCH_STALL) {
+              printf("Start cycle[%llu]: SM-%d/wid-%d fetch an insn from L1I, insn pc[0x%04x].\n", 
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_sid, mf->get_wid(), m_warp[mf->get_wid()]->get_pc());
+              // fflush(stdout);
+            }
+            /*************************************************************************************** tmp end   */
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
             delete mf;
           } else {
             m_last_warp_fetched = warp_id;
             assert(status == RESERVATION_FAIL);
             delete mf;
+            /*************************************************************************************** tmp start */
+            if (PRINT_FETCH_STALL) {
+              printf("Stall cycle[%llu]: Fetch, SM-%d/wid-%d reservation fail an insn from L1I, insn pc[0x%04x]:\n", 
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_sid, mf->get_wid(), m_warp[mf->get_wid()]->get_pc());
+              // fflush(stdout);
+            }
+            /*************************************************************************************** tmp end   */
           }
           break;
         }
@@ -1734,7 +1762,8 @@ void scheduler_unit::cycle() {
   //warp列表，依次进行调度。
   for (std::vector<shd_warp_t *>::const_iterator iter =
            m_next_cycle_prioritized_warps.begin();
-       iter != m_next_cycle_prioritized_warps.end(); iter++) {
+       iter != m_next_cycle_prioritized_warps.end(); iter++) 
+  {
     // Don't consider warps that are not yet valid
     //如果warp不是有效的，即没有有效的指令，或者warp已经执行完毕，则跳过调度该warp。
     if ((*iter) == NULL || (*iter)->done_exit()) {
@@ -1762,17 +1791,46 @@ void scheduler_unit::cycle() {
 
     //返回I-Bufer是否为空。这里一个warp有一个I-Bufer，I-Bufer是一个队列，存储了当前warp中的待
     //执行指令。
-    if (warp(warp_id).ibuffer_empty())
+    if (warp(warp_id).ibuffer_empty()) {
       SCHED_DPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as ibuffer_empty\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+      /*************************************************************************************** tmp start */
+      if (PRINT_ISSUE_STALL && !warp(warp_id).waiting()) {
+        printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as ibuffer_empty.\n", 
+               m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+               (*iter)->get_warp_id());
+        // fflush(stdout);
+      }
+      /*************************************************************************************** tmp end   */
+    }
     //返回warp是否由于（warp已经执行完毕且在等待新内核初始化、CTA处于barrier、memory barrier、
     //还有未完成的原子操作）四个条件处于等待状态。
-    if (warp(warp_id).waiting())
+    if (warp(warp_id).waiting()) {
       SCHED_DPRINTF(
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
           "barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+      /*************************************************************************************** tmp start */
+      if (PRINT_ISSUE_STALL && !warp(warp_id).ibuffer_empty()) {
+        printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as waiting for barrier, waitting insn pc[0x%04x]: ", 
+               m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+               (*iter)->get_warp_id(), warp(warp_id).ibuffer_next_inst()->pc);
+        warp(warp_id).ibuffer_next_inst()->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), 
+                                                                    warp(warp_id).ibuffer_next_inst()->pc);
+        // fflush(stdout);
+      }
+      /*************************************************************************************** tmp end   */
+    }
+
+    /*************************************************************************************** tmp start */
+    if (PRINT_ISSUE_STALL && warp(warp_id).waiting() && warp(warp_id).ibuffer_empty()) {
+      printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as ibuffer_empty and also waiting for barrier.\n",
+             m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+             (*iter)->get_warp_id());
+      // fflush(stdout);
+    }
+    /*************************************************************************************** tmp end   */
 
     //checked是下面循环的循环次数，即在当前可调度的warp下，执行检测这个warp的可发射指令数至多为
     //max_issue，在V100配置中为1，即无论这个循环中有没有将指令发射出去，都不能再进行第二轮循环，
@@ -1782,7 +1840,8 @@ void scheduler_unit::cycle() {
     //功，这时候我们就要暂停当前warp的调度，以保证指令执行的正确性。
     while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
            (checked < max_issue) && (checked <= issued) &&
-           (issued < max_issue)) {
+           (issued < max_issue)) 
+    {
       //对warp_id代表的warp，获取其ibuffer中的下一条指令。
       const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
       // Jin: handle cdp latency;
@@ -1820,6 +1879,15 @@ void scheduler_unit::cycle() {
               (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
           // control hazard
           //将warp下一次执行的指令PC值设置为从SIMT堆栈中取出的PC。
+          /*************************************************************************************** tmp start */
+          if (PRINT_ISSUE_STALL) {
+            printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as control hazard, insn pc[0x%04x]: ", 
+                   m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                   (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+            pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+            // fflush(stdout);
+          }
+          /*************************************************************************************** tmp end   */
           warp(warp_id).set_next_pc(pc);
           //刷新warp的ibuffer，因为ibuffer此刻已有的指令已经不会再执行。
           warp(warp_id).ibuffer_flush();
@@ -1869,6 +1937,23 @@ void scheduler_unit::cycle() {
                 warp_inst_issued = true;
                 previous_issued_inst_exec_type = exec_unit_type_t::MEM;
               }
+              /*************************************************************************************** tmp start */
+              if (PRINT_ISSUE_STALL) {
+                if (!m_mem_out->has_free(m_shader->m_config->sub_core_model, m_id)) {
+                  printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_mem_out has no free slot, insn pc[0x%04x]: ", 
+                         m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                         (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                  pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                  // fflush(stdout);
+                } else if (previous_issued_inst_exec_type == exec_unit_type_t::MEM) {
+                  printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is MEM, insn pc[0x%04x]: ", 
+                         m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                         (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                  pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                  // fflush(stdout);
+                }
+              }
+              /*************************************************************************************** tmp end   */
             } else {
               // This code need to be refactored
               if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
@@ -1902,7 +1987,36 @@ void scheduler_unit::cycle() {
                          !(diff_exec_units && previous_issued_inst_exec_type ==
                                                   exec_unit_type_t::SP))
                   execute_on_SP = true;
-
+                /*************************************************************************************** tmp start */
+                if (PRINT_ISSUE_STALL) {
+                  if (!int_pipe_avail) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_int_out has no free slot, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  } else if (previous_issued_inst_exec_type == exec_unit_type_t::INT) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is INT, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  }
+                  if (!sp_pipe_avail) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_sp_out has no free slot, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  } else if (previous_issued_inst_exec_type == exec_unit_type_t::SP) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is SP, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  }
+                }
+                /*************************************************************************************** tmp end   */
                 if (execute_on_INT || execute_on_SP) {
                   // Jin: special for CDP api
                   if (pI->m_is_cdp && !warp(warp_id).m_cdp_dummy) {
@@ -1942,17 +2056,37 @@ void scheduler_unit::cycle() {
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::INT;
                 }
-              } else if ((m_shader->m_config->gpgpu_num_dp_units > 0) &&
-                         (pI->op == DP_OP) &&
-                         !(diff_exec_units && previous_issued_inst_exec_type ==
-                                                  exec_unit_type_t::DP)) 
+              } 
+              // else if ((m_shader->m_config->gpgpu_num_dp_units > 0) &&                              // yangjianchao16 del
+              //            (pI->op == DP_OP) &&                                                       // yangjianchao16 del
+              //            !(diff_exec_units && previous_issued_inst_exec_type ==                     // yangjianchao16 del
+              //                                     exec_unit_type_t::DP))                            // yangjianchao16 del
+              else if (pI->op == DP_OP && (m_shader->m_config->gpgpu_num_dp_units > 0))                // yangjianchao16 add
               {
                 bool dp_pipe_avail =
                     (m_shader->m_config->gpgpu_num_dp_units > 0) &&
                     m_dp_out->has_free(m_shader->m_config->sub_core_model,
                                        m_id);
-
-                if (dp_pipe_avail) {
+                /*************************************************************************************** tmp start */
+                if (PRINT_ISSUE_STALL) {
+                  if (!dp_pipe_avail) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_dp_out has no free slot, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  } else if (previous_issued_inst_exec_type == exec_unit_type_t::DP) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is DP, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  }
+                }
+                /*************************************************************************************** tmp end   */
+                // if (dp_pipe_avail) {                                                                // yangjianchao16 del
+                if (dp_pipe_avail && !(diff_exec_units &&                                              // yangjianchao16 add
+                    previous_issued_inst_exec_type == exec_unit_type_t::DP)) {                         // yangjianchao16 add
                   m_shader->issue_warp(*m_dp_out, pI, active_mask, warp_id,
                                        m_id);
                   issued++;
@@ -1962,18 +2096,39 @@ void scheduler_unit::cycle() {
                 }
               }  // If the DP units = 0 (like in Fermi archi), then execute DP
                  // inst on SFU unit
-              else if (((m_shader->m_config->gpgpu_num_dp_units == 0 &&
-                         pI->op == DP_OP) ||
-                        (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP)) &&
-                       !(diff_exec_units && previous_issued_inst_exec_type ==
-                                                exec_unit_type_t::SFU)) 
+              // else if (((m_shader->m_config->gpgpu_num_dp_units == 0 &&                             // yangjianchao16 del
+              //            pI->op == DP_OP) ||                                                        // yangjianchao16 del
+              //           (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP)) &&                            // yangjianchao16 del
+              //          !(diff_exec_units && previous_issued_inst_exec_type ==                       // yangjianchao16 del
+              //                                   exec_unit_type_t::SFU))                             // yangjianchao16 del
+              else if ((m_shader->m_config->gpgpu_num_dp_units == 0 && pI->op == DP_OP) ||             // yangjianchao16 add
+                       (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP))                                   // yangjianchao16 add
               {
                 bool sfu_pipe_avail =
                     (m_shader->m_config->gpgpu_num_sfu_units > 0) &&
                     m_sfu_out->has_free(m_shader->m_config->sub_core_model,
                                         m_id);
-
-                if (sfu_pipe_avail) {
+                /*************************************************************************************** tmp start */
+                if (PRINT_ISSUE_STALL) {
+                  if (!sfu_pipe_avail) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_sfu_out has no free slot, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  } else if (previous_issued_inst_exec_type == exec_unit_type_t::SFU) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is SFU, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  }
+                }
+                /*************************************************************************************** tmp end   */
+                // if (sfu_pipe_avail) {                                                               // yangjianchao16 del
+                if (sfu_pipe_avail && !(diff_exec_units &&                                             // yangjianchao16 add
+                    previous_issued_inst_exec_type == exec_unit_type_t::SFU))                          // yangjianchao16 add
+                {                                                                                      // yangjianchao16 add
                   m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id,
                                        m_id);
                   issued++;
@@ -1981,16 +2136,37 @@ void scheduler_unit::cycle() {
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::SFU;
                 }
-              } else if ((pI->op == TENSOR_CORE_OP) &&
-                         !(diff_exec_units && previous_issued_inst_exec_type ==
-                                                  exec_unit_type_t::TENSOR)) 
+              }
+              // else if ((pI->op == TENSOR_CORE_OP) &&                                                // yangjianchao16 del
+              //            !(diff_exec_units && previous_issued_inst_exec_type ==                     // yangjianchao16 del
+              //                                     exec_unit_type_t::TENSOR))                        // yangjianchao16 del
+              else if (pI->op == TENSOR_CORE_OP)                                                       // yangjianchao16 add
               {
                 bool tensor_core_pipe_avail =
                     (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
                     m_tensor_core_out->has_free(
                         m_shader->m_config->sub_core_model, m_id);
-
-                if (tensor_core_pipe_avail) {
+                /*************************************************************************************** tmp start */
+                if (PRINT_ISSUE_STALL) {
+                  if (!tensor_core_pipe_avail) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_tensor_core_out has no free slot, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  } else if (previous_issued_inst_exec_type == exec_unit_type_t::TENSOR) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is TENSOR, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  }
+                }
+                /*************************************************************************************** tmp end   */
+                // if (tensor_core_pipe_avail) {                                                       // yangjianchao16 del
+                if (tensor_core_pipe_avail && !(diff_exec_units &&                                     // yangjianchao16 add
+                    previous_issued_inst_exec_type == exec_unit_type_t::TENSOR))                       // yangjianchao16 add
+                {                                                                                      // yangjianchao16 add
                   m_shader->issue_warp(*m_tensor_core_out, pI, active_mask,
                                        warp_id, m_id);
                   issued++;
@@ -1998,10 +2174,13 @@ void scheduler_unit::cycle() {
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::TENSOR;
                 }
-              } else if ((pI->op >= SPEC_UNIT_START_ID) &&
-                         !(diff_exec_units &&
-                           previous_issued_inst_exec_type ==
-                               exec_unit_type_t::SPECIALIZED)) {
+              } 
+              // else if ((pI->op >= SPEC_UNIT_START_ID) &&                                            // yangjianchao16 del
+              //            !(diff_exec_units &&                                                       // yangjianchao16 del
+              //              previous_issued_inst_exec_type ==                                        // yangjianchao16 del
+              //                  exec_unit_type_t::SPECIALIZED))                                      // yangjianchao16 del
+              else if (pI->op >= SPEC_UNIT_START_ID)                                                   // yangjianchao16 add
+              {
                 unsigned spec_id = pI->op - SPEC_UNIT_START_ID;
                 assert(spec_id < m_shader->m_config->m_specialized_unit.size());
                 register_set *spec_reg_set = m_spec_cores_out[spec_id];
@@ -2010,8 +2189,27 @@ void scheduler_unit::cycle() {
                      0) &&
                     spec_reg_set->has_free(m_shader->m_config->sub_core_model,
                                            m_id);
-
-                if (spec_pipe_avail) {
+                /*************************************************************************************** tmp start */
+                if (PRINT_ISSUE_STALL) {
+                  if (!spec_pipe_avail) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as m_spec_cores_out has no free slot, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  } else if (previous_issued_inst_exec_type == exec_unit_type_t::SPECIALIZED) {
+                    printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as previous_issued_inst_exec_type is SPECIALIZED, insn pc[0x%04x]: ", 
+                           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                           (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+                    // fflush(stdout);
+                  }
+                }
+                /*************************************************************************************** tmp end   */
+                // if (spec_pipe_avail) {                                                              // yangjianchao16 del
+                if (spec_pipe_avail && !(diff_exec_units &&                                            // yangjianchao16 add
+                    previous_issued_inst_exec_type == exec_unit_type_t::SPECIALIZED))                  // yangjianchao16 add
+                {                                                                                      // yangjianchao16 add
                   m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id,
                                        m_id);
                   issued++;
@@ -2027,6 +2225,15 @@ void scheduler_unit::cycle() {
             SCHED_DPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+            /*************************************************************************************** tmp start */
+            if (PRINT_ISSUE_STALL) {
+              printf("Stall cycle[%llu]: Issue, SM-%d/wid-%d fails as scoreboard, insn pc[0x%04x]: ", 
+                     m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), 
+                     (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+              pI->print_sass_insn_line_tmp(stdout, (*iter)->get_warp_id(), (pI->pc == pc) ? pI->pc : pc);
+              // fflush(stdout);
+            }
+            /*************************************************************************************** tmp end   */
           }
         }
       } else if (valid) {
@@ -2254,7 +2461,8 @@ void shader_core_ctx::read_operands() {
   //m_config->reg_file_port_throughput是寄存器文件的端口数。在V100配置文件里gpgpu_reg_file_
   //port_throughput被设置为2。
   for (int i = 0; i < m_config->reg_file_port_throughput; ++i)
-    m_operand_collector.step();
+    // m_operand_collector.step();                                                                // yangjianchao16 del
+    m_operand_collector.step(get_gpu()->gpu_sim_cycle + get_gpu()->gpu_tot_sim_cycle, get_sid()); // yangjianchao16 add
 }
 
 address_type coalesced_segment(address_type addr,
@@ -2458,6 +2666,17 @@ void shader_core_ctx::execute() {
     //返回m_fu[n]单元的流水线寄存器m_pipeline_reg[issue_port]中的指令寄存器集合issue_inst
     //的第reg_id个。
     warp_inst_t **ready_reg = issue_inst.get_ready(partition_issue, reg_id);
+    /*************************************************************************************** tmp start */
+    if (PRINT_EXECUTE_STALL) {
+      if (!m_fu[n]->get_dispatch_reg()->empty() && issue_inst.has_ready(partition_issue, reg_id)) {
+        printf("Stall cycle[%llu]: Execute, SM-%d/wid-%d fails as m_dispatch_reg of fu[%d]-%s is not empty, insn pc[0x%04x]: ", 
+             get_gpu()->gpu_sim_cycle + get_gpu()->gpu_tot_sim_cycle, get_sid(), 
+             (*ready_reg)->warp_id(), n, m_fu[n]->get_name(), (*ready_reg)->pc);
+        (*ready_reg)->print_sass_insn_line_tmp(stdout, (*ready_reg)->warp_id(), (*ready_reg)->pc);
+        // fflush(stdout);
+      }
+    }
+    /*************************************************************************************** tmp end   */
     //给定一个寄存器reg_id，判断该寄存器是否非空。
     if (issue_inst.has_ready(partition_issue, reg_id) &&
         //返回**ready_reg指令的return m_dispatch_reg->empty()，即判断m_dispatch_reg是否
@@ -2484,13 +2703,25 @@ void shader_core_ctx::execute() {
       //m_fu[n]->stallable()：LDST单元返回true，其余返回false。
       bool schedule_wb_now = !m_fu[n]->stallable();
       int resbus = -1;
+      /*************************************************************************************** tmp start */
+      if (PRINT_EXECUTE_STALL) {
+        if (schedule_wb_now && (test_res_bus((*ready_reg)->latency) == -1)) {
+          printf("Stall cycle[%llu]: Execute, SM-%d/wid-%d fails as result_bus has no slot for latency-%d, insn pc[0x%04x]: ", 
+              get_gpu()->gpu_sim_cycle + get_gpu()->gpu_tot_sim_cycle, get_sid(), 
+              (*ready_reg)->warp_id(), (*ready_reg)->latency, (*ready_reg)->pc);
+          (*ready_reg)->print_sass_insn_line_tmp(stdout, (*ready_reg)->warp_id(), (*ready_reg)->pc);
+          // fflush(stdout);
+        }
+      }
+      /*************************************************************************************** tmp end   */
       if (schedule_wb_now &&
           //除LDST单元外走这里。
           //test_res_bus() function locates a free slot in all the result buses (the 
           //slot is free if its bit is not set).
           //test_res_bus函数在所有结果总线中定位一个空闲插槽（如果未设置其位，则该插槽为空
           //闲插槽)。实际上test_res_bus()函数模拟的是指令延迟。
-          (resbus = test_res_bus((*ready_reg)->latency)) != -1) {
+          (resbus = test_res_bus((*ready_reg)->latency)) != -1) 
+      {
         /*************************************************************************************** tmp start */
         if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
             m_sid == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
@@ -2604,22 +2835,43 @@ void warp_inst_t::print_sass_insn_line(FILE *fout) const {
     fprintf(fout, "bubble\n");
     return;
   } else
-    fprintf(fout, "        * insn 0x%04x ", pc);
+    fprintf(fout, "pc[0x%04x] ", pc);
   fprintf(fout, "w%02d[", m_warp_id);
   for (unsigned j = 0; j < m_config->warp_size; j++)
     fprintf(fout, "%c", (active(j) ? '1' : '0'));
   fprintf(fout, "]: ");
-  fprintf(fout, "src regs: ");
-  for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
-    int reg_num = arch_reg.src[op];
-    if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
-  }
-  fprintf(fout, "dst regs: ");
-  for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
-    int reg_num = arch_reg.dst[op];
-    if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
-  }
-  fprintf(fout, "\n");
+  // fprintf(fout, "src: ");
+  // for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+  //   int reg_num = arch_reg.src[op];
+  //   if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  // }
+  // fprintf(fout, "dst: ");
+  // for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+  //   int reg_num = arch_reg.dst[op];
+  //   if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  // }
+  // fprintf(fout, " | ");
+  printf("%s\n", find_sass_inst_by_pc(pc).insnStr.c_str());
+}
+
+void warp_inst_t::print_sass_insn_line_tmp(FILE *fout, unsigned warp_id, address_type pc) const {
+  fprintf(fout, "pc[0x%04x] ", pc);
+  fprintf(fout, "w%02d[", warp_id);
+  for (unsigned j = 0; j < m_config->warp_size; j++)
+    fprintf(fout, "%c", (active(j) ? '1' : '0'));
+  fprintf(fout, "]: ");
+  // fprintf(fout, "src: ");
+  // for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+  //   int reg_num = arch_reg.src[op];
+  //   if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  // }
+  // fprintf(fout, "dst: ");
+  // for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
+  //   int reg_num = arch_reg.dst[op];
+  //   if (reg_num >= 0) fprintf(fout, "%d ", reg_num-1);
+  // }
+  // fprintf(fout, " | ");
+  printf("%s\n", find_sass_inst_by_pc(pc).insnStr.c_str());
 }
 
 /*
@@ -4995,7 +5247,7 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
       result;  // a list of registers that (a) are in different register banks,
                // (b) do not go to the same operand collector
 
-  // input the the register bank
+  // input is the register bank
   // output is the collector units
   int input;
   int output;
@@ -5108,7 +5360,7 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
         // (m_queue[input].front()).get_wid(),
         // (m_queue[input].front()).get_reg());
       }
-      //由于要保证
+      //操作数收集器的编号递增。
       output = (output + 1) % _outputs;
     }
   }
@@ -5127,7 +5379,7 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
     if (_inmatch[i] != -1) {
       //判断第i号Bank是否已经被分配给某个收集器单元用于写操作，如果不是写操作的话（即为读操作），
       //则将对应读第i号Bank的请求队列m_queue中的首个操作数请求放入result。
-      if (!m_allocated_bank[i].is_write()) {
+      if (!m_allocated_bank[i].is_write()) { // !m_allocated_bank[i].is_write() <==> _inmatch[i] != 0
         unsigned bank = (unsigned)i;
         op_t &op = m_queue[bank].front();
         result.push_back(op);
@@ -5135,6 +5387,192 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
       }
     }
   }
+
+  return result;
+}
+
+// modifiers
+/*
+操作数收集器的仲裁器，用于分配读操作。
+*/
+std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads(unsigned long long cycle) {
+  //create a list of results
+  //创建一个结果列表，(a)在不同的寄存器文件Bank，(b)不走向相同的操作数收集器。
+  std::list<op_t>
+      result;  // a list of registers that (a) are in different register banks,
+               // (b) do not go to the same operand collector
+
+  // input is the register bank
+  // output is the collector units
+  int input;
+  int output;
+  //_inputs是寄存器文件的Bank数。
+  int _inputs = m_num_banks;
+  //_outputs是操作数收集器的数量。
+  int _outputs = m_num_collectors;
+  //对应到MAP对角顺序检查图的最大维度，或长度或宽度。
+  int _square = (_inputs > _outputs) ? _inputs : _outputs;
+  assert(_square > 0);
+  //_pri是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的下一个收
+  //集器单元的ID。
+  int _pri = (int)m_last_cu;
+
+  // Clear matching: set all the entries to -1
+  //_inmatch[i]是第i个Bank的可匹配操作数收集器ID，如果该值不为-1或0，则说明它已经匹配到。
+  for (int i = 0; i < _inputs; ++i) _inmatch[i] = -1;
+  //_outmatch[j]是第j个操作数收集器的可匹配Bank的ID，如果该值不为-1或0，则说明它已经匹配到。
+  for (int j = 0; j < _outputs; ++j) _outmatch[j] = -1;
+
+  //对所有的寄存器文件Bank进行循环。
+  for (unsigned i = 0; i < m_num_banks; i++) {
+    //_request[m_num_banks][m_num_collectors]是指某个收集器单元对某个寄存器Bank是否有请求，
+    //有则置1，无则置0。下面的一个for循环对所有的收集器单元和所有的寄存器Bank进行循环，设置所
+    //有的请求数量为0。
+    for (unsigned j = 0; j < m_num_collectors; j++) {
+      assert(i < (unsigned)_inputs);
+      assert(j < (unsigned)_outputs);
+      //设置第j个收集器单元对第i个寄存器文件Bank的请求置0。
+      _request[i][j] = 0;
+    }
+    //m_queue是一个以bank号来索引的操作数队列，m_queue[i]是第i个bank获取的操作数队列。如果这
+    //个队列不为空，说明这个bank有操作数请求已经存入m_queue。
+    if (!m_queue[i].empty()) {
+      const op_t &op = m_queue[i].front();
+      //op.get_oc_id()返回当前操作数所属的收集器单元的ID。
+      int oc_id = op.get_oc_id();
+      assert(i < (unsigned)_inputs);
+      assert(oc_id < _outputs);
+      //第oc_id个收集器单元对第i个寄存器文件Bank的请求数量置1。
+      _request[i][oc_id] = 1;
+    }
+    //m_allocated_bank[i]用于存储第i个Bank的状态，包括NO_ALLOC, READ_ALLOC, WRITE_ALLOC。
+    //如果第i个Bank是WRITE_ALLOC，说明这个Bank已经被分配给某个收集器单元，这个收集器单元正在
+    //执行写操作，因此，这个Bank不能被分配给其他收集器单元。
+    if (m_allocated_bank[i].is_write()) {
+      assert(i < (unsigned)_inputs);
+      //当第i个Bank是WRITE_ALLOC时，第i个Bank对于所有的收集器单元来说都不可分配为读操作，所以
+      //这里设置_inmatch中的第i个Bank的可匹配状态为0。写操作具有更高的优先级。
+      _inmatch[i] = 0;  // write gets priority
+    }
+  }
+
+  ///// wavefront allocator from booksim... --->
+
+  // Loop through diagonals of request matrix
+  // printf("####\n");
+
+  //对所有操作数收集器循环。这里检查的顺序是按照对角线检查的，例如，如果有5个收集器单元，3个Bank，
+  //则_square=5，_outputs=5，_inputs=3，如果设置_pri=2的话，下面的两层for循环会按照下面的顺序
+  //进行检查：
+  //    order    input    output
+  //      1        0         2
+  //      2        1         3
+  //      3        2         4
+  //      4        0         3
+  //      5        1         4
+  //      6        2         0
+  //      7        0         4
+  //      8        1         0
+  //      9        2         1
+  //      10       0         0
+  //      11       1         1
+  //      12       2         2
+  //      13       0         1
+  //      14       1         2
+  //      15       2         3
+  //对应到MAP对角顺序检查图为：
+  //                   _output
+  //             0    1    2    3    4
+  //           |----|----|----|----|----|
+  //         0 | 10 | 13 |  1 |  4 |  7 |
+  //           |----|----|----|----|----|
+  // _input  1 |  8 | 11 | 14 |  2 |  5 |
+  //           |----|----|----|----|----|
+  //         2 |  6 |  9 | 12 | 15 |  3 |
+  //           |----|----|----|----|----|
+  for (int p = 0; p < _square; ++p) {
+    //_pri是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的下一个收
+    //集器单元的ID。这里是当前执行arbiter_t::allocate_reads()函数时，从上一次最后一个被分配的
+    //收集器单元的下一个收集器单元的ID开始遍历，RR循环。
+    output = (_pri + p) % _outputs;
+
+    // Step through the current diagonal
+    for (input = 0; input < _inputs; ++input) {
+      assert(input < _inputs);
+      assert(output < _outputs);
+      //如果第input个Bank没有被分配给某个收集器单元，且第output个收集器单元对第input个Bank有请
+      //求，那么就分配第input个Bank给第output个收集器单元。设置_inmatch中的第input个Bank的可匹
+      //配收集器单元为output，设置_outmatch中的第output个收集器单元的可匹配Bank为input。
+      if ((output < _outputs) && (_inmatch[input] == -1) &&
+          //( _outmatch[output] == -1 ) &&   //allow OC to read multiple reg
+          // banks at the same cycle
+          (_request[input][output] /*.label != -1*/)) {
+        // Grant!
+        _inmatch[input] = output;
+        _outmatch[output] = input;
+        // printf("Register File: granting bank %d to OC %d, schedid %d, warpid
+        // %d, Regid %d\n", input, output, (m_queue[input].front()).get_sid(),
+        // (m_queue[input].front()).get_wid(),
+        // (m_queue[input].front()).get_reg());
+      }
+      //操作数收集器的编号递增。
+      output = (output + 1) % _outputs;
+    }
+  }
+
+  // Round-robin the priority diagonal
+  //_pri是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的下一个收集
+  //器单元的ID。
+  _pri = (_pri + 1) % _outputs;
+
+  /// <--- end code from booksim
+  //m_last_cu是上一次执行arbiter_t::allocate_reads()函数时，最后一个被分配的收集器单元的ID。
+  m_last_cu = _pri;
+  //对所有的寄存器文件Bank进行循环。
+  for (unsigned i = 0; i < m_num_banks; i++) {
+    //如果存在分配给第i号Bank的操作数收集器。
+    if (_inmatch[i] != -1) {
+      //判断第i号Bank是否已经被分配给某个收集器单元用于写操作，如果不是写操作的话（即为读操作），
+      //则将对应读第i号Bank的请求队列m_queue中的首个操作数请求放入result。
+      if (!m_allocated_bank[i].is_write()) { // !m_allocated_bank[i].is_write() <==> _inmatch[i] != 0
+        unsigned bank = (unsigned)i;
+        op_t &op = m_queue[bank].front();
+        result.push_back(op);
+        m_queue[bank].pop_front();
+      }
+    }
+  }
+
+  /*************************************************************************************** tmp start */
+  if (PRINT_READ_OPERANDS_STALL) {
+    for (unsigned bank = 0; bank < m_num_banks; bank++) {
+      std::list<op_t>::iterator iter;
+      for (iter = m_queue[bank].begin(); iter != m_queue[bank].end(); iter++) {
+        if (iter->valid() && !iter->get_m_warp()->empty()) {
+          const warp_inst_t* insn = iter->get_m_warp();
+          unsigned reg_num = iter->get_reg();
+          unsigned warp_id = iter->get_m_warp()->warp_id();
+          unsigned sid = iter->get_sid();
+          unsigned pc = iter->get_m_warp()->pc;
+          unsigned bank_num = iter->get_bank();
+          unsigned reg_order = iter->get_operand();
+          std::string reg_string = iter->get_reg_string();
+          if (_inmatch[bank] == 0) { //m_allocated_bank[i].is_write()
+            printf("Stall cycle[%llu]: ReadOperands, SM-%d/wid-%d fails as bank[%d] reg-%d (order:%d) belonged "
+                   "to was allocated for write, insn pc[0x%04x]: ", 
+                   cycle, sid, warp_id, bank_num, reg_num-1, reg_order, pc);
+            insn->print_sass_insn_line_tmp(stdout, warp_id, pc);
+          } else if (_inmatch[bank] > 0) { //allocated to other reg_num
+            printf("Stall cycle[%llu]: ReadOperands, SM-%d/wid-%d fails as bank[%d] reg-%d (order:%d) belonged "
+                   "to was allocated for other regs, insn pc[0x%04x]: ", 
+                   cycle, sid, warp_id, bank_num, reg_num-1, reg_order, pc);
+            insn->print_sass_insn_line_tmp(stdout, warp_id, pc);
+          }
+        }
+      }
+    }
+  }
+  /*************************************************************************************** tmp end   */
 
   return result;
 }
@@ -5742,7 +6180,8 @@ V100中配置为16。
 */
 void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_shader = shader;
-  m_arbiter.init(m_cu.size(), num_banks);
+  // m_arbiter.init(m_cu.size(), num_banks);  // yangjianchao16 del
+  m_arbiter->init(m_cu.size(), num_banks);    // yangjianchao16 add
   // for( unsigned n=0; n<m_num_ports;n++ )
   //    m_dispatch_units[m_output[n]].init( m_num_collector_units[n] );
   
@@ -5861,10 +6300,12 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
         printf("          * prepare to write back the %d-th dst_reg, the reg num is: %d, it is in bank: %d.: \n", op, reg_num, bank);
       }
       /*************************************************************************************** tmp end   */
-      if (m_arbiter.bank_idle(bank)) {
+      // if (m_arbiter.bank_idle(bank)) {  // yangjianchao16 del
+      if (m_arbiter->bank_idle(bank)) {    // yangjianchao16 add
         //写回到寄存器Bank。
         //m_bank_warp_shift被初始化为5。
-        m_arbiter.allocate_bank_for_write(
+        // m_arbiter.allocate_bank_for_write(  // yangjianchao16 del
+        m_arbiter->allocate_bank_for_write(    // yangjianchao16 add
             bank,
             op_t(&inst, reg_num, m_num_banks, m_bank_warp_shift, sub_core_model,
                  m_num_banks_per_sched, inst.get_schd_id()));
@@ -5883,6 +6324,13 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
             shader_core()->get_sid() == PRINT_PROCESS_SM_ID && PRINT_WRITE_BACK_PROCESS) {
           printf("          * the status of bank-%d is not NO_ALLOC, so stop the write back operation of the "
                  "%d-th dst_reg (reg num: %d)\n", bank, op, reg_num);
+        }
+        
+        if (PRINT_WRITE_BACK_STALL) {
+          printf("Stall cycle[%llu]: Writeback, SM-%d, bank-%d of reg-%d is not idle, insn pc[0x%04x]: ", 
+                 m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), bank, reg_num-1, inst.pc);
+          inst.print_sass_insn_line(stdout);
+          // fflush(stdout);
         }
         /*************************************************************************************** tmp end   */
         return false;
@@ -5911,6 +6359,14 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
           m_shader->get_config()->warp_size);  // inst.active_count());
     }
   }
+  /*************************************************************************************** tmp start */
+  if (PRINT_WRITE_BACK_STALL) {
+    printf("End cycle[%llu]: SM-%d end an insn, insn pc[0x%04x]: ", 
+           m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_shader->get_sid(), inst.pc);
+    inst.print_sass_insn_line(stdout);
+    // fflush(stdout);
+  }
+  /*************************************************************************************** tmp end   */
   return true;
 }
 
@@ -5951,7 +6407,7 @@ void opndcoll_rfu_t::dispatch_ready_cu() {
   for (unsigned p = 0; p < m_dispatch_units.size(); ++p) {
     //m_dispatch_units[p]是第p个调度器。
     dispatch_unit_t &du = m_dispatch_units[p];
-    //从第p个调度器找到一个空闲准备好可以接收的收集器单元。
+    //从第p个调度器找到一个准备好数据的收集器单元。
     collector_unit_t *cu = du.find_ready();
     if (cu) {
       //在对PTX指令解析的时候，有计算操作数需要的寄存器个数，m_operands在ptx_ir.h的
@@ -5995,9 +6451,9 @@ void opndcoll_rfu_t::dispatch_ready_cu() {
               m_shader->get_config()->warp_size);  // cu->get_active_count());
         }
       }
-      //如果能够从第p个调度器找到一个空闲准备好可以接收的收集器单元的话，就执行它的分
-      //发函数dispatch()。主要过程是，经过收集器单元收集完源操作数后，将原先暂存在收
-      //集器单元指令槽m_warp中的指令推出到m_output_register中。
+      //如果能够从第p个调度器找到一个准备好数据的的收集器单元的话，就执行它的分发函数
+      //dispatch()。主要过程是，经过收集器单元收集完源操作数后，将原先暂存在收集器单
+      //元指令槽m_warp中的指令推出到m_output_register中。
       cu->dispatch();
     }
   }
@@ -6028,16 +6484,24 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
   //因此，m_in_ports对象：
   // 0-7 -> {{m_pipeline_reg[ID_OC_SP], m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[ID_OC_MEM],
   //          m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[ID_OC_DP], m_pipeline_reg[ID_OC_INT],
-  //          m_config->m_specialized_unit[0].ID_OC_SPEC_ID, m_config->m_specialized_unit[1].ID_OC_SPEC_ID, 
-  //          m_config->m_specialized_unit[2].ID_OC_SPEC_ID, m_config->m_specialized_unit[3].ID_OC_SPEC_ID,
-  //          m_config->m_specialized_unit[4].ID_OC_SPEC_ID, m_config->m_specialized_unit[5].ID_OC_SPEC_ID,
-  //          m_config->m_specialized_unit[6].ID_OC_SPEC_ID, m_config->m_specialized_unit[7].ID_OC_SPEC_ID},
+  //          m_pipeline_reg[m_config->m_specialized_unit[0].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[1].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[2].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[3].ID_OC_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[4].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[5].ID_OC_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[6].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[7].ID_OC_SPEC_ID]},
   //         {m_pipeline_reg[OC_EX_SP], m_pipeline_reg[OC_EX_SFU], m_pipeline_reg[OC_EX_MEM],
   //          m_pipeline_reg[OC_EX_TENSOR_CORE], m_pipeline_reg[OC_EX_DP], m_pipeline_reg[OC_EX_INT],
-  //          m_config->m_specialized_unit[0].OC_EX_SPEC_ID, m_config->m_specialized_unit[1].OC_EX_SPEC_ID, 
-  //          m_config->m_specialized_unit[2].OC_EX_SPEC_ID, m_config->m_specialized_unit[3].OC_EX_SPEC_ID,
-  //          m_config->m_specialized_unit[4].OC_EX_SPEC_ID, m_config->m_specialized_unit[5].OC_EX_SPEC_ID,
-  //          m_config->m_specialized_unit[6].OC_EX_SPEC_ID, m_config->m_specialized_unit[7].OC_EX_SPEC_ID},
+  //          m_pipeline_reg[m_config->m_specialized_unit[0].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[1].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[2].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[3].OC_EX_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[4].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[5].OC_EX_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[6].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[7].OC_EX_SPEC_ID]},
   //         GEN_CUS}
   //   8 -> {m_pipeline_reg[ID_OC_SP], m_pipeline_reg[OC_EX_SP], {SP_CUS, GEN_CUS}}
   //   9 -> {m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[OC_EX_SFU], {SFU_CUS, GEN_CUS}}
@@ -6095,7 +6559,8 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
             //这个收集器单元中。
             allocated = cu->allocate(inp.m_in[i], inp.m_out[i]);
             //从收集器单元获取所有的源操作数，并将它们放入m_queue[bank]队列。
-            m_arbiter.add_read_requests(cu);
+            // m_arbiter.add_read_requests(cu);  // yangjianchao16 del
+            m_arbiter->add_read_requests(cu);    // yangjianchao16 add
             break;
           }
         }
@@ -6109,6 +6574,140 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
 }
 
 /*
+opndcoll_rfu_t::allocate_cu函数将ID_OC流水线寄存器中的指令分配给收集器单元。
+*/
+void opndcoll_rfu_t::allocate_cu(unsigned port_num, unsigned long long cycle, unsigned sm_id) {
+  //端口（m_in_Ports）：包含输入流水线寄存器集合（ID_OC）和输出寄存器集合（OC_EX）。
+  //ID_OC端口中的warp_inst_t将被发布到收集器单元。此外，当收集器单元获得所有所需的源
+  //寄存器时，它将由调度单元调度到输出管道寄存器集（OC_EX）。m_in_ports中会含有多个
+  //input_port_t对象，每个对象分别对应于SP/DP/SFU/INT/MEM/TC单元（但是一个单元可能
+  //会有多个input_port_t对象，不是一一对应的），例如添加SP单元的input_port_t对象时：
+  //   for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_sp;
+  //     i++) {
+  //     in_ports.push_back(&m_pipeline_reg[ID_OC_SP]);
+  //     out_ports.push_back(&m_pipeline_reg[OC_EX_SP]);
+  //     cu_sets.push_back((unsigned)SP_CUS);
+  //     cu_sets.push_back((unsigned)GEN_CUS);
+  //     m_operand_collector.add_port(in_ports, out_ports, cu_sets);
+  //     in_ports.clear(), out_ports.clear(), cu_sets.clear();
+  //   }
+  //   void opndcoll_rfu_t::add_port(port_vector_t &input, port_vector_t &output,
+  //                                 uint_vector_t cu_sets) {
+  //     m_in_ports.push_back(input_port_t(input, output, cu_sets));
+  //   }
+  //因此，m_in_ports对象：
+  // 0-7 -> {{m_pipeline_reg[ID_OC_SP], m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[ID_OC_MEM],
+  //          m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[ID_OC_DP], m_pipeline_reg[ID_OC_INT],
+  //          m_pipeline_reg[m_config->m_specialized_unit[0].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[1].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[2].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[3].ID_OC_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[4].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[5].ID_OC_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[6].ID_OC_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[7].ID_OC_SPEC_ID]},
+  //         {m_pipeline_reg[OC_EX_SP], m_pipeline_reg[OC_EX_SFU], m_pipeline_reg[OC_EX_MEM],
+  //          m_pipeline_reg[OC_EX_TENSOR_CORE], m_pipeline_reg[OC_EX_DP], m_pipeline_reg[OC_EX_INT],
+  //          m_pipeline_reg[m_config->m_specialized_unit[0].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[1].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[2].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[3].OC_EX_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[4].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[5].OC_EX_SPEC_ID],
+  //          m_pipeline_reg[m_config->m_specialized_unit[6].OC_EX_SPEC_ID], 
+  //          m_pipeline_reg[m_config->m_specialized_unit[7].OC_EX_SPEC_ID]},
+  //         GEN_CUS}
+  //   8 -> {m_pipeline_reg[ID_OC_SP], m_pipeline_reg[OC_EX_SP], {SP_CUS, GEN_CUS}}
+  //   9 -> {m_pipeline_reg[ID_OC_SFU], m_pipeline_reg[OC_EX_SFU], {SFU_CUS, GEN_CUS}}
+  //  10 -> {m_pipeline_reg[ID_OC_TENSOR_CORE], m_pipeline_reg[OC_EX_TENSOR_CORE]
+  //  11 -> {m_pipeline_reg[ID_OC_MEM], m_pipeline_reg[OC_EX_MEM], {MEM_CUS, GEN_CUS}}
+  //所以这里的inp=m_in_ports[port_num]是第port_num个input_port_t对象。
+  input_port_t &inp = m_in_ports[port_num];
+  //对inp的输入端口进行循环。
+  for (unsigned i = 0; i < inp.m_in.size(); i++) {
+    //遍历寄存器集合(*inp.m_in[i])是否存在一个非空寄存器已准备好。
+    if ((*inp.m_in[i]).has_ready()) { // inp.m_in[i] -> register_set, have a valid insn
+      // find a free cu
+      //遍历当前端口内的所有收集器单元，找到一个空闲的收集器单元。
+      bool have_found_free_cu = false;
+      for (unsigned j = 0; j < inp.m_cu_sets.size(); j++) {
+        //m_cus是一个字典，存储了所有的收集器单元，其定义：
+        //   //id对应收集器单元的的字典。
+        //   typedef std::map<unsigned /* collector set */,
+        //                    std::vector<collector_unit_t> /*collector sets*/>
+        //       cu_sets_t;
+        //   //操作数收集器的集合。
+        //   cu_sets_t m_cus;
+        //例如，inp.m_cu_sets[j]可以是SP_CUS，那么m_cus[inp.m_cu_sets[j]]就相当于是
+        //m_cus[SP_CUS]，是一个vector，存储了SP单元的多个收集器单元。
+        std::vector<collector_unit_t> &cu_set = m_cus[inp.m_cu_sets[j]];
+        bool allocated = false;
+        //cuLowerBound是当前调度器可用的收集器单元的下界。
+        unsigned cuLowerBound = 0;
+        //cuUpperBound是当前调度器可用的收集器单元的上界。
+        unsigned cuUpperBound = cu_set.size();
+        //schd_id是发射当前指令的调度器ID。
+        unsigned schd_id;
+        //在V100配置中，sub_core_model为1。
+        if (sub_core_model) {
+          // Sub core model only allocates on the subset of CUs assigned to the
+          // scheduler that issued
+          unsigned reg_id = (*inp.m_in[i]).get_ready_reg_id();
+          //获取发射当前指令的调度器ID。
+          schd_id = (*inp.m_in[i]).get_schd_id(reg_id);
+          assert(cu_set.size() % m_num_warp_scheds == 0 &&
+                 cu_set.size() >= m_num_warp_scheds);
+          //一个调度器可用的收集器单元数目。
+          unsigned cusPerSched = cu_set.size() / m_num_warp_scheds;
+          //cuLowerBound是当前调度器可用的收集器单元的下界。
+          cuLowerBound = schd_id * cusPerSched;
+          //cuUpperBound是当前调度器可用的收集器单元的上界。
+          cuUpperBound = cuLowerBound + cusPerSched;
+          assert(0 <= cuLowerBound && cuUpperBound <= cu_set.size());
+        }
+        //检查cuLowerBound-(cuUpperBound-1)范围内的收集器单元是否有空闲的收集器单元。
+        for (unsigned k = cuLowerBound; k < cuUpperBound; k++) {
+          if (cu_set[k].is_free()) {
+            have_found_free_cu = true;
+            //找到一个空闲的收集器单元，其索引为k。
+            collector_unit_t *cu = &cu_set[k];
+            //当前收集器单元为空闲状态的话，cu->allocate就可以将一个新的warp指令放到
+            //这个收集器单元中。
+            allocated = cu->allocate(inp.m_in[i], inp.m_out[i]);
+            //从收集器单元获取所有的源操作数，并将它们放入m_queue[bank]队列。
+            // m_arbiter.add_read_requests(cu);  // yangjianchao16 del
+            m_arbiter->add_read_requests(cu);    // yangjianchao16 add
+            break;
+          }
+        }
+        if (allocated) break;  // cu has been allocated, no need to search more.
+        /*************************************************************************************** tmp start */
+        else { // => !allocated, has two reasons, (1) not found free cu (2) found free cu, but not succeed to allocate
+          if (PRINT_READ_OPERANDS_STALL) {
+            if (j == inp.m_cu_sets.size()-1) {
+              if (!have_found_free_cu) {
+                warp_inst_t** insn = (inp.m_in[i])->get_ready();
+                printf("Stall cycle[%llu]: ReadOperands, SM-%d/wid-%d port_num-%d/m_in_ports[%d].m_in[%d] fails as not found free cu, insn pc[0x%04x]: ", 
+                       cycle, sm_id, (*insn)->warp_id(), port_num, port_num, i, (*insn)->pc);
+                (*insn)->print_sass_insn_line_tmp(stdout, (*insn)->warp_id(), (*insn)->pc);
+              } else {
+                // print in cu->allocate(...)
+                // no this case cause 
+              }
+            }
+          }
+        }
+        /*************************************************************************************** tmp end   */
+      }
+      // break;  // can only service a single input, if it failed it will fail
+      // for
+      // others.
+    }
+  }
+}
+
+
+/*
 仲裁器检查请求，并返回不同寄存器Bank中的op_t列表，并且这些寄存器Bank不处于Write状态。
 在该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些
 寄存器Bank不处于Write状态。
@@ -6116,8 +6715,8 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
 void opndcoll_rfu_t::allocate_reads() {
   // process read requests that do not have conflicts
   //处理没有冲突的读请求。在该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不
-  //同的寄存器组中，并且这些寄存器组不处于Write状态。
-  std::list<op_t> allocated = m_arbiter.allocate_reads();
+  //同的寄存器Bank中，并且这些寄存器Bank不处于Write状态。
+  std::list<op_t> allocated = m_arbiter->allocate_reads();
   //read_ops字典，存储第i个Bank的读操作数。
   std::map<unsigned, op_t> read_ops;
   for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end();
@@ -6133,7 +6732,70 @@ void opndcoll_rfu_t::allocate_reads() {
     //      assert(bank < m_num_banks);
     //      m_allocated_bank[bank].alloc_read(op);
     //    }
-    m_arbiter.allocate_for_read(bank, rr);
+    // m_arbiter.allocate_for_read(bank, rr);  // yangjianchao16 del
+    m_arbiter->allocate_for_read(bank, rr);    // yangjianchao16 add
+    read_ops[bank] = rr;
+  }
+  std::map<unsigned, op_t>::iterator r;
+  //遍历read_ops字典，存储第i个Bank的读操作数的字典，遍历所有的读操作数。
+  for (r = read_ops.begin(); r != read_ops.end(); ++r) {
+    op_t &op = r->second;
+    unsigned cu = op.get_oc_id();
+    //op.get_operand()返回当前操作数在其指令所有的源操作数中的排序。
+    unsigned operand = op.get_operand();
+    //设置释放掉m_not_ready位向量的第operand位，用来表明该条指令的第operand个源操
+    //作数已经处于就绪状态。
+    m_cu[cu]->collect_operand(operand);
+    //gpgpu_clock_gated_reg_file在V100中配置为0。
+    if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
+      unsigned active_count = 0;
+      for (unsigned i = 0; i < m_shader->get_config()->warp_size;
+           i = i + m_shader->get_config()->n_regfile_gating_group) {
+        for (unsigned j = 0; j < m_shader->get_config()->n_regfile_gating_group;
+             j++) {
+          if (op.get_active_mask().test(i + j)) {
+            active_count += m_shader->get_config()->n_regfile_gating_group;
+            break;
+          }
+        }
+      }
+      m_shader->incregfile_reads(active_count);
+    } else {
+      //设置SM的寄存器读的个数加32。
+      m_shader->incregfile_reads(
+          m_shader->get_config()->warp_size);  // op.get_active_count());
+    }
+  }
+}
+
+/*
+仲裁器检查请求，并返回不同寄存器Bank中的op_t列表，并且这些寄存器Bank不处于Write状态。
+在该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些
+寄存器Bank不处于Write状态。
+*/
+void opndcoll_rfu_t::allocate_reads(unsigned long long cycle) {
+  // process read requests that do not have conflicts
+  //处理没有冲突的读请求。在该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不
+  //同的寄存器Bank中，并且这些寄存器Bank不处于Write状态。
+  // std::list<op_t> allocated = m_arbiter.allocate_reads();  // yangjianchao16 del
+  std::list<op_t> allocated = m_arbiter->allocate_reads(cycle);    // yangjianchao16 add
+  //read_ops字典，存储第i个Bank的读操作数。
+  std::map<unsigned, op_t> read_ops;
+  for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end();
+       r++) {
+    const op_t &rr = *r;
+    unsigned reg = rr.get_reg();
+    unsigned wid = rr.get_wid();
+    unsigned bank =
+        register_bank(reg, wid, m_num_banks, m_bank_warp_shift, sub_core_model,
+                      m_num_banks_per_sched, rr.get_sid());
+    //allocate_for_read函数分配给第bank号Bank的读状态，读的操作数为op，其定义为：
+    //    void allocate_for_read(unsigned bank, const op_t &op) {
+    //      assert(bank < m_num_banks);
+    //      m_allocated_bank[bank].alloc_read(op);
+    //    }
+    // m_arbiter.allocate_for_read(bank, rr);  // yangjianchao16 del
+    m_arbiter->allocate_for_read(bank, rr);    // yangjianchao16 add
     read_ops[bank] = rr;
   }
   std::map<unsigned, op_t>::iterator r;
@@ -6274,9 +6936,12 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
         //m_src_op是一个op_t类型的向量，用来存储一条指令的所有源操作数，m_src_op[0]存
         //储第0个源操作数，m_src_op[1]存储第1个源操作数，...，m_src_op[31]存储第31个
         //源操作数。
-        m_src_op[op] = op_t(this, op, reg_num, m_num_banks, m_bank_warp_shift,
-                            m_sub_core_model, m_num_banks_per_sched,
-                            (*pipeline_reg)->get_schd_id());
+        // m_src_op[op] = op_t(this, op, reg_num, m_num_banks, m_bank_warp_shift,  // yangjianchao16 del
+        //                     m_sub_core_model, m_num_banks_per_sched,            // yangjianchao16 del
+        //                     (*pipeline_reg)->get_schd_id());                    // yangjianchao16 del
+        m_src_op[op] = op_t(this, op, reg_num, m_num_banks, m_bank_warp_shift,     // yangjianchao16 add
+                            m_sub_core_model, m_num_banks_per_sched,               // yangjianchao16 add
+                            (*pipeline_reg)->get_schd_id(), *pipeline_reg);        // yangjianchao16 add
         //m_not_ready的定义为：
         //    std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
         //m_not_ready是一个位向量，用来存储一条指令的所有源操作数是否处于非就绪状态。这
