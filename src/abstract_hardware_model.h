@@ -1481,6 +1481,7 @@ class warp_inst_t : public inst_t {
   }
 
   //返回该条指令还剩下多少initiation_interval。
+  int has_dispatch_delay_num() { return cycles; }
   bool has_dispatch_delay() { return cycles > 0; }
 
   void print(FILE *fout) const;
