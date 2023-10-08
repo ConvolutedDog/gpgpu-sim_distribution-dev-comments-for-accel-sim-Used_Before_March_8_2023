@@ -66,12 +66,14 @@
 #define PRINT_WRITE_BACK_PROCESS 0
 #define PRINT_EXECUTE_PROCESS 0
 
-#define PRINT_FETCH_STALL 0
-#define PRINT_DECODE_STALL 0 // DECODE has no stall
-#define PRINT_ISSUE_STALL 0
-#define PRINT_EXECUTE_STALL 0
-#define PRINT_READ_OPERANDS_STALL 0
-#define PRINT_WRITE_BACK_STALL 0
+#define PRINT_START_CYCLE 1
+#define PRINT_FETCH_STALL 1 // For V100 has no FETCH stall
+#define PRINT_DECODE_STALL 1 // DECODE has no stall
+#define PRINT_ISSUE_STALL 1
+#define PRINT_EXECUTE_STALL 1
+#define PRINT_READ_OPERANDS_STALL 1
+#define PRINT_WRITE_BACK_STALL 1
+#define PRINT_END_CYCLE 1
 
 /*
 source ./gpu-simulator/setup_environment.sh && make -j -C ./gpu-simulator/ && ./gpu-simulator/bin/release/accel-sim.out -trace ./hw_run/traces/device-1/11.0/wmma_tensorcore/NO_ARGS/traces/kernelslist.g -config ./gpu-simulator/gpgpu-sim/configs/tested-cfgs/SM75_RTX2080_Ti/gpgpusim.config -config ./gpu-simulator/configs/tested-cfgs/SM75_RTX2080_Ti/trace.config > tmp.txt
@@ -861,6 +863,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
   // modifiers
   bool writeback(warp_inst_t &warp);
+  bool writeback(warp_inst_t &warp, int print_execute_stall);
 
   //操作数收集器向前执行一步。
   void step() {
@@ -925,7 +928,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     //仲裁器检查请求，并返回不同寄存器Bank中的op_t列表，并且这些寄存器Bank不处于Write状态。在
     //该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些寄存器
     //Bank不处于Write状态。
-    allocate_reads(cycle);
+    allocate_reads(cycle, sm_id);
     //端口（m_in_Ports）：包含输入流水线寄存器集合（ID_OC）和输出寄存器集合（OC_EX）。ID_OC端
     //口中的warp_inst_t将被发布到收集器单元。此外，当收集器单元获得所有所需的源寄存器时，它将由
     //调度单元调度到输出管道寄存器集（OC_EX）。m_in_ports中有多个input_port_t对象，每个对象分
@@ -999,7 +1002,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   //该函数中，仲裁器检查请求并返回op_t的列表，这些op_t位于不同的寄存器Bank中，并且这些寄存器
   //Bank不处于Write状态。
   void allocate_reads();
-  void allocate_reads(unsigned long long cycle);
+  void allocate_reads(unsigned long long cycle, unsigned sm_id);
 
   // types
 
@@ -1270,7 +1273,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
     // modifiers
     std::list<op_t> allocate_reads();
-    std::list<op_t> allocate_reads(unsigned long long cycle);
+    std::list<op_t> allocate_reads(unsigned long long cycle, unsigned sm_id);
 
     //从收集器单元获取所有的源操作数，并将它们放入m_queue[bank]队列。
     void add_read_requests(collector_unit_t *cu) {
