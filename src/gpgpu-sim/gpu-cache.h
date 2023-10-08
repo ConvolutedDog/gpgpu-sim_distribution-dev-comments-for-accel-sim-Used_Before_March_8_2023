@@ -90,6 +90,9 @@ enum cache_event_type {
   WRITE_ALLOCATE_SENT
 };
 
+/*
+写回时被逐出的block的信息。
+*/
 struct evicted_block_info {
   new_addr_type m_block_addr;
   unsigned m_modified_size;
@@ -115,8 +118,23 @@ struct evicted_block_info {
   }
 };
 
+/*
+Cache事件，保存了缓存事件类型，和写回时被逐出的block的信息。
+*/
 struct cache_event {
+  //m_cache_event_type保存了缓存事件类型：
+  //   enum cache_event_type {
+  //     //写回请求。
+  //     WRITE_BACK_REQUEST_SENT,
+  //     //读请求。
+  //     READ_REQUEST_SENT,
+  //     //写请求。
+  //     WRITE_REQUEST_SENT,
+  //     //写分配请求。
+  //     WRITE_ALLOCATE_SENT
+  //   };
   enum cache_event_type m_cache_event_type;
+  //如果当前cache_event是写回事件，就需要更新m_evicted_block。
   evicted_block_info m_evicted_block;  // if it was write_back event, fill the
                                        // the evicted block info
 
@@ -725,6 +743,7 @@ class cache_config {
     m_line_sz_log2 = LOGB2(m_line_sz);
     m_nset_log2 = LOGB2(m_nset);
     m_valid = true;
+    //cache替换原子操作的粒度，如果cache是SECTOR类型的，粒度为SECTOR_SIZE，否则为line_size。
     m_atom_sz = (m_cache_type == SECTOR) ? SECTOR_SIZE : m_line_sz;
     m_sector_sz_log2 = LOGB2(SECTOR_SIZE);
     original_m_assoc = m_assoc;
@@ -786,6 +805,7 @@ class cache_config {
     assert(m_line_sz % m_data_port_width == 0);
 
     switch (sif) {
+      //L1D是"L"-LINEAR_SET_FUNCTION，L2D是"P"-HASH_IPOLY_FUNCTION。
       case 'H':
         m_set_index_function = FERMI_HASH_SET_FUNCTION;
         break;
@@ -843,6 +863,9 @@ class cache_config {
                          unsigned m_line_sz_log2, unsigned m_nset_log2,
                          unsigned m_index_function) const;
 
+  //为了便于起见，这里的标记包括index和Tag。这允许更复杂的（可能导致不同的indexes映射到
+  //同一set）set index计算，因此需要完整的标签 + 索引来检查命中/未命中。Tag现在与块地址
+  //相同。
   new_addr_type tag(new_addr_type addr) const {
     // For generality, the tag includes both index and tag. This allows for more
     // complex set index calculations that can result in different indexes
@@ -1040,6 +1063,14 @@ class tag_array {
  protected:
   cache_config &m_config;
 
+  //cache block的所有集合。
+  // For example, 4 sets, 6 ways:
+  // |  0  |  1  |  2  |  3  |  4  |  5  |  // set_index 0
+  // |  6  |  7  |  8  |  9  |  10 |  11 |  // set_index 1
+  // |  12 |  13 |  14 |  15 |  16 |  17 |  // set_index 2
+  // |  18 |  19 |  20 |  21 |  22 |  23 |  // set_index 3
+  //                |--------> index => cache_block_t *line
+  //m_lines[index] = &m_lines[set_index * m_config.m_assoc + way_index]
   cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
 
   unsigned m_access;
@@ -1385,6 +1416,7 @@ class baseline_cache : public cache_t {
                                            std::list<cache_event> &events) = 0;
   // Sends next request to lower level of memory
   void cycle();
+  void cycle(unsigned long long cycle);
   // Interface for response from lower memory level (model bandwidth
   // restictions in caller)
   void fill(mem_fetch *mf, unsigned time);
