@@ -77,11 +77,23 @@ unsigned l1d_cache_config::set_bank(new_addr_type addr) const {
                                      l1_banks_log2, l1_banks_hashing_function);
 }
 
+/*
+返回一个地址在Cache中的set。
+*/
 unsigned cache_config::set_index(new_addr_type addr) const {
+  // m_line_sz_log2 = LOGB2(m_line_sz);
+  // m_nset_log2 = LOGB2(m_nset);
+  // m_set_index_function = L1D是"L"-LINEAR_SET_FUNCTION，L2D是"P"-HASH_IPOLY_FUNCTION。
   return cache_config::hash_function(addr, m_nset, m_line_sz_log2, m_nset_log2,
                                      m_set_index_function);
 }
 
+/*
+返回一个地址在Cache中的set。
+m_line_sz_log2 = LOGB2(m_line_sz);
+m_nset_log2 = LOGB2(m_nset);
+m_set_index_function = L1D是"L"-LINEAR_SET_FUNCTION，L2D是"P"-HASH_IPOLY_FUNCTION。
+*/
 unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
                                      unsigned m_line_sz_log2,
                                      unsigned m_nset_log2,
@@ -127,7 +139,11 @@ unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
       set_index = bitwise_hash_function(higher_bits, index, m_nset);
       break;
     }
+
+    // V100配置的L2D Cache。
     case HASH_IPOLY_FUNCTION: {
+      // addr: [m_line_sz_log2+m_nset_log2-1:0]                => set index + byte offset
+      // addr: [:m_line_sz_log2+m_nset_log2]                   => Tag
       new_addr_type higher_bits = addr >> (m_line_sz_log2 + m_nset_log2);
       unsigned index = (addr >> m_line_sz_log2) & (m_nset - 1);
       set_index = ipoly_hash_function(higher_bits, index, m_nset);
@@ -138,7 +154,10 @@ unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
       break;
     }
 
+    // V100配置的L1D Cache。
     case LINEAR_SET_FUNCTION: {
+      // addr: [m_line_sz_log2-1:0]                            => byte offset
+      // addr: [m_line_sz_log2+m_nset_log2-1:m_line_sz_log2]   => set index
       set_index = (addr >> m_line_sz_log2) & (m_nset - 1);
       break;
     }
@@ -252,7 +271,11 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            bool is_write, bool probe_mode,
                                            mem_fetch *mf) const {
   // assert( m_config.m_write_policy == READ_ONLY );
+  //返回一个地址addr在Cache中的set index。
   unsigned set_index = m_config.set_index(addr);
+  //为了便于起见，这里的标记包括index和Tag。这允许更复杂的（可能导致不同的indexes映射到
+  //同一set）set index计算，因此需要完整的标签 + 索引来检查命中/未命中。Tag现在与块地址
+  //相同。
   new_addr_type tag = m_config.tag(addr);
 
   unsigned invalid_line = (unsigned)-1;
@@ -262,17 +285,31 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   bool all_reserved = true;
 
   // check for hit or pending hit
+  //对所有的Cache Ways检查。
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
+    // For example, 4 sets, 6 ways:
+    // |  0  |  1  |  2  |  3  |  4  |  5  |  // set_index 0
+    // |  6  |  7  |  8  |  9  |  10 |  11 |  // set_index 1
+    // |  12 |  13 |  14 |  15 |  16 |  17 |  // set_index 2
+    // |  18 |  19 |  20 |  21 |  22 |  23 |  // set_index 3
+    //                |--------> index => cache_block_t *line
     unsigned index = set_index * m_config.m_assoc + way;
     cache_block_t *line = m_lines[index];
+    // Tag相符。
     if (line->m_tag == tag) {
       if (line->get_status(mask) == RESERVED) {
+        //如果Cache block[mask]状态是RESERVED，说明有其他的线程正在加载这个Cache block。
+        //挂起的命中访问已命中处于RESERVED状态的缓存行，这意味着同一行上已存在由先前缓存未
+        //命中发送的flying内存请求。
         idx = index;
         return HIT_RESERVED;
       } else if (line->get_status(mask) == VALID) {
+        //如果Cache block[mask]状态是VALID，说明已经命中。
         idx = index;
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
+        //如果Cache block[mask]状态是MODIFIED，说明已经被其他线程修改，如果当前访问也是写
+        //操作的话即为命中，但如果不是写操作则为SECTOR_MISS。
         if ((!is_write && line->is_readable(mask)) || is_write) {
           idx = index;
           return HIT;
@@ -280,14 +317,15 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
           idx = index;
           return SECTOR_MISS;
         }
-
       } else if (line->is_valid_line() && line->get_status(mask) == INVALID) {
+        //Cache block有效，但是其中的byte mask=Cache block[mask]状态无效，说明sector缺失。
         idx = index;
         return SECTOR_MISS;
       } else {
         assert(line->get_status(mask) == INVALID);
       }
     }
+    //如果当前Cache Line的状态不是RESERVED。
     if (!line->is_reserved_line()) {
       // percentage of dirty lines in the cache
       // number of dirty lines / total lines in the cache
@@ -297,8 +335,10 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       // or the total dirty cacheline is above a specific value,
       // Then this cacheline is eligible to be considered for replacement candidate
       // i.e. Only evict clean cachelines until total dirty cachelines reach the limit.
+      //在V100中配置为25%。
       if (!line->is_modified_line() ||
-          dirty_line_percentage >= m_config.m_wr_percent) {
+          dirty_line_percentage >= m_config.m_wr_percent) 
+      {
         all_reserved = false;
         if (line->is_invalid_line()) {
           invalid_line = index;
@@ -1201,6 +1241,44 @@ void baseline_cache::cycle() {
   m_bandwidth_management.replenish_port_bandwidth();
 }
 
+// Sends next request to lower level of memory
+/*
+cache向前推进一拍。
+*/
+void baseline_cache::cycle(unsigned long long cycle) {
+  //如果MISS请求队列中不为空，则将队首的请求发送到下一级内存。
+  if (!m_miss_queue.empty()) {
+    mem_fetch *mf = m_miss_queue.front();
+    if (!m_memport->full(mf->size(), mf->get_is_write())) {
+      /*************************************************************************************** tmp start */
+      if (/* m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle && */
+          get_sm_id() == PRINT_PROCESS_SM_ID && PRINT_EXECUTE_PROCESS) {
+        printf("      * cache %s 's m_miss_queue is not empty, and m_memport is not full, "
+              "just send m_miss_queue.front() to the next level of memory.\n", get_name().c_str());
+      }
+      /*************************************************************************************** tmp end   */
+      m_miss_queue.pop_front();
+      //mem_fetch_interface是对mem访存的接口。
+      m_memport->push(mf);
+    }
+    /*************************************************************************************** tmp start */
+    else {
+      if (PRINT_EXECUTE_STALL) {
+        printf("Stall cycle[%llu]: Execute, SM-%d/wid-%d fails as m_memport of L1D is not free to put mf, "
+               "insn pc[0x%04x]: ", 
+               cycle, get_sm_id(), mf->get_inst().warp_id(), mf->get_inst().pc);
+        mf->get_inst().print_sass_insn_line_tmp(stdout, mf->get_inst().warp_id(), mf->get_inst().pc);
+        // fflush(stdout);
+      }
+    }
+    /*************************************************************************************** tmp end   */
+  }
+  bool data_port_busy = !m_bandwidth_management.data_port_free();
+  bool fill_port_busy = !m_bandwidth_management.fill_port_free();
+  m_stats.sample_cache_port_utility(data_port_busy, fill_port_busy);
+  m_bandwidth_management.replenish_port_bandwidth();
+}
+
 // Interface for response from lower memory level (model bandwidth restictions
 // in caller)
 void baseline_cache::fill(mem_fetch *mf, unsigned time) {
@@ -1900,11 +1978,18 @@ enum cache_request_status data_cache::process_tag_probe(
 // of caching policies.
 // Both the L1 and L2 override this function to provide a means of
 // performing actions specific to each cache when such actions are implemnted.
+/*
+L1 和 L2 目前使用相同的访问功能。两个缓存之间的区分是通过配置缓存策略来完成的。
+L1 和 L2 都覆盖此函数，以提供在包含此类操作时执行特定于每个缓存的操作的方法。
+*/
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned time,
                                              std::list<cache_event> &events) {
+  //m_config.get_atom_sz()是cache替换原子操作的粒度，如果cache是SECTOR类型的，粒度为
+  //SECTOR_SIZE，否则为line_size。
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status probe_status =
@@ -1922,6 +2007,10 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 // It is write-evict (global) or write-back (local) at the
 // granularity of individual blocks (Set by GPGPU-Sim configuration file)
 // (the policy used in fermi according to the CUDA manual)
+/*
+这是为了对Fermi中的第一级数据缓存进行建模。它是单个块粒度的写逐出（global）或写回（local）
+（由 GPGPU-Sim 配置文件设置）（根据 CUDA 手册在Fermi中使用的策略）。
+*/
 enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) {
