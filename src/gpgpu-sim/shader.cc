@@ -6986,7 +6986,7 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num, unsigned long long cycle, un
             if (j == inp.m_cu_sets.size()-1) {
               if (!have_found_free_cu) {
                 warp_inst_t** insn = (inp.m_in[i])->get_ready();
-                printf("Stall cycle[%llu]: ReadOperands, SM-%d/wid-%d port_num-%d/m_in_ports[%d].m_in[%d] fails as not found free cu, insn pc[0x%04x]: ", 
+                printf("Stall cycle[%llu]: ReadOperands, SM-%d/wid-%d fails as port_num-%d/m_in_ports[%d].m_in[%d] not found free cu, insn pc[0x%04x]: ", 
                        cycle, sm_id, (*insn)->warp_id(), port_num, port_num, i, (*insn)->pc);
                 (*insn)->print_sass_insn_line_tmp(stdout, (*insn)->warp_id(), (*insn)->pc);
               } else {
