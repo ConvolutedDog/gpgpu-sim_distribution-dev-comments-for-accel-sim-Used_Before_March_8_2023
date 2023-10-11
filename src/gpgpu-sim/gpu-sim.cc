@@ -2418,6 +2418,17 @@ gpgpu_sim::cycle()方法为gpgpu-sim中的所有体系结构组件计时，包�
 4. 对memory_partition_unit::cache_cycle()的调用为二级缓存组计时，并将请求移入或移出二级缓存。下一
    节描述了memory_partition_unit::cache_cycle()的内部结构。
 */
+
+/*
+数字转二进制打印。
+*/
+void print_binary(unsigned int number) {
+    if (number >> 1) {
+        print_binary(number >> 1);
+    }
+    putc((number & 1) ? '1' : '0', stdout);
+}
+
 void gpgpu_sim::cycle() {
   //下一个需要推进的时钟域的时钟域掩码。因为每个时钟域是异步的，不是同时更新的。四个时钟的mask标记为：
   //    #define CORE 0b0001
