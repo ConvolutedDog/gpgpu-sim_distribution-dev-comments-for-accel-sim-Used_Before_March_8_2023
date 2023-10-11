@@ -928,6 +928,8 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
   // Jin: launch latency management
   m_launch_latency = entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency;
 
+  //g_kernel_launch_latency: Kernel launch latency in cycles, 5000 (V100)
+  //g_TB_launch_latency: Thread block launch latency in cycles, 0 (V100)
   m_kernel_TB_latency =
       entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency +
       num_blocks() * entry->gpgpu_ctx->device_runtime->g_TB_launch_latency;
