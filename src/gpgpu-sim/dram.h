@@ -108,8 +108,14 @@ enum bank_grp_bits_position { HIGHER_BITS = 0, LOWER_BITS };
 class mem_fetch;
 class memory_config;
 
+/*
+dram_t是隶属于单个memory_partition_unit的DRAM模型，每个memory_partition_unit有一个
+dram_t模型。
+*/
 class dram_t {
  public:
+  //dram_t的构造函数。每个memory_partition_unit有一个dram_t模型，dram_t是隶属于单个
+  //memory_partition_unit的DRAM模型。
   dram_t(unsigned int parition_id, const memory_config *config,
          class memory_stats_t *stats, class memory_partition_unit *mp,
          class gpgpu_sim *gpu);
