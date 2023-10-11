@@ -323,8 +323,8 @@ class memory_config {
     //                         &m_n_sub_partition_per_memory_channel,
     //                         "number of memory subpartition in each memory module",
     //                         "1");
-    //而m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel，代表全部内存子
-    //分区的总数。
+    //而m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel=64，代表全
+    //部内存子分区的总数。
     m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel;
     fprintf(stdout, "Total number of memory sub partition = %u\n",
             m_n_mem_sub_partition);
