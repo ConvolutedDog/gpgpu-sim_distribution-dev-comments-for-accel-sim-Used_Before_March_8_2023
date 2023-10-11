@@ -45,12 +45,19 @@ int PRINT_CYCLE = 0;
 template class fifo_pipeline<mem_fetch>;
 template class fifo_pipeline<dram_req_t>;
 
+/*
+dram_t的构造函数。每个memory_partition_unit有一个dram_t模型，dram_t是隶属于单个
+memory_partition_unit的DRAM模型。
+*/
 dram_t::dram_t(unsigned int partition_id, const memory_config *config,
                memory_stats_t *stats, memory_partition_unit *mp,
                gpgpu_sim *gpu) {
+  //memory_partition_unit的ID。
   id = partition_id;
+  //隶属于的memory_partition_unit。
   m_memory_partition_unit = mp;
   m_stats = stats;
+  //memory config。
   m_config = config;
   m_gpu = gpu;
 
