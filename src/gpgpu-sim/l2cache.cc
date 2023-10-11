@@ -685,6 +685,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
         if (status == HIT) {
           //如果访问L2缓存命中。
           if (!write_sent) {
+            //如果不是写操作且命中L2 Cache，则需要判断是否是L1_WRBK_ACC。
             // L2 cache replies
             assert(!read_sent);
             //!write_sent且!read_sent，发送的是WRITE_BACK_REQUEST_SENT/WRITE_ALLOCATE_SENT。
@@ -692,6 +693,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
               m_request_tracker.erase(mf);
               delete mf;
             } else {
+              //如果不是L1_WRBK_ACC，则说明是数据读，就需要将该数据包返回给ICNT。
               mf->set_reply();
               mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -701,7 +703,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
             m_icnt_L2_queue->pop();
           } else {
             assert(write_sent);
-            //从ICNT向L2的队列中弹出。
+            //如果是写操作且命中L2 Cache，则直接从ICNT向L2的队列中弹出这个数据包即可。
             m_icnt_L2_queue->pop();
           }
         } else if (status != RESERVATION_FAIL) {
