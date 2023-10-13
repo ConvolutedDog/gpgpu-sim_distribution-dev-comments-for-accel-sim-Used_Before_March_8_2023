@@ -505,19 +505,3 @@ To debug failing GPGPU-Sim regression tests you need to run them locally.  The f
 	. torque.sim
 	```
 	This will put you in at the (gdb) prompt.  Setup any breakpoints needed and run.  
-
-# Commit to Gitee
-```shell
-# To see what files have been modified.
-git status
-# To add all the files to the tmp-store zone, and then use "git push" to commit.
-git add -A
-# Also can choose a specified file to push.
-git add src/cuda-sim/cuda-sim.cc
-# Add comments to the pushed files.
-git commit -m "Update cuda-sim.cc"
-# Push the modified files to Gitee.
-git push [-v main]
-```
-
-After pushing the modified files to Gitee, Gitee will update Github's repo synchronously.
