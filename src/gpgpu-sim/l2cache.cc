@@ -330,7 +330,7 @@ void memory_partition_unit::dram_cycle() {
     //如果dest_spid所标识的内存子分区的DRAM_to_L2队列未满。
     if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
       if (mf_return->get_access_type() == L1_WRBK_ACC) {
-        //mf_return内存请求是写响应的话，只需设置其完成即可。
+        //mf_return内存请求是L1写回的话，只需设置其完成即可。
         m_sub_partition[dest_spid]->set_done(mf_return);
         delete mf_return;
       } else {
@@ -511,6 +511,17 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     //问。m_L2_icnt_queue这里需要看手册中的第五章中内存分区的详细细节图，memory_sub_partition向互连网
     //络推出数据包的接口就是L2_icnt_queue->ICNT，因此这里是判断内存子分区中的m_L2_icnt_queue队列是否非
     //满，如果非满，说明可以向互连网络推出数据包。m_current_response仅存储了就绪内存访问的地址。
+    //未命中状态保持寄存器，the miss status holding register，MSHR。MSHR的模型是用mshr_table类来模拟
+    //一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有固定数量
+    //的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR条目的数量和
+    //每个条目的最大请求数是可配置的。
+    //缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未命中
+    //处理逻辑将首先检查未命中状态保持寄存器（MSHR），以查看当前是否有来自先前请求的相同请求挂起。如果是，
+    //则此请求将合并到同一条目中，并且不需要发出新的数据请求。否则，将为该数据请求保留一个新的MSHR条目和缓
+    //存行。缓存状态处理程序可能会在资源不可用时失败，例如没有可用的MSHR条目、该集中的所有缓存块都已保留但
+    //尚未填充、未命中队列已满等。
+    //这里m_mshrs.access_ready()返回的是就绪内存访问的列表m_current_response是否非空，就绪内存访问的列
+    //表仅存储了就绪内存访问的地址。如果存在已经被填入MSHR条目的访问，则返回true。
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
       //m_L2cache->next_access()调用MSHR的next_access()返回一个就绪的内存访问，即m_current_response
       //中的顶部地址标志的数据包（m_current_response仅存储了就绪内存访问的地址）。
@@ -553,7 +564,8 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
         mf->set_reply();
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        //将mf填充进L2缓存到ICNT的队列m_L2_icnt_queue。
+        //这里，如果L2 Cache中有了就绪内存访问，就可以立即将该就绪内存访问（非L2_WR_ALLOC_R请求）发送到
+        //ICNT，将mf填充进L2缓存到ICNT的队列m_L2_icnt_queue。
         m_L2_icnt_queue->push(mf);
       } else {
         //当前缓存层次是L2缓存，如果mf的类型是L2_WR_ALLOC_R，说明L2缓存发生了写不命中，需要将主存中块调
@@ -693,7 +705,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
               m_request_tracker.erase(mf);
               delete mf;
             } else {
-              //如果不是L1_WRBK_ACC，则说明是数据读，就需要将该数据包返回给ICNT。
+              //如果不是L1_WRBK_ACC，则说明是数据读，就需要将reply数据包返回给ICNT。
               mf->set_reply();
               mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
