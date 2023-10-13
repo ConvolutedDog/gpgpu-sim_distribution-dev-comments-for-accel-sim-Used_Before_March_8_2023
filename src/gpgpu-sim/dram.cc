@@ -62,20 +62,33 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
   m_gpu = gpu;
 
   // rowblp
+  //访问总数。
   access_num = 0;
+  //命中总数。
   hits_num = 0;
+  //读总数。
   read_num = 0;
+  //写总数。
   write_num = 0;
+  //命中的读总数。
   hits_read_num = 0;
+  //命中的写总数。
   hits_write_num = 0;
+  //对所有bank的读请求总次数。
   banks_1time = 0;
+  //对任意bank有读请求的总拍数。
   banks_acess_total = 0;
+  //????
   banks_acess_total_after = 0;
   banks_time_ready = 0;
   banks_access_ready_total = 0;
+  //同时发送行命令和列命令的次数：issued_col_cmd && issued_row_cmd。
   issued_two = 0;
+  //发送行命令和列命令的总次数。
   issued_total = 0;
+  //发送行命令的总次数。
   issued_total_row = 0;
+  //发送列命令的总次数。
   issued_total_col = 0;
 
   CCDc = 0;
@@ -120,7 +133,8 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
     bk[i]->bkgrpindex = i / (m_config->nbk / m_config->nbkgrp);
   }
   prio = 0;
-
+  //CAS Latency Control(也被描述为tCL、CL、CAS Latency Time、CAS Timing Delay)，CAS latency是
+  //“内存读写操作前列地址控制器的潜伏时间”。 CAS控制从接受一个指令到执行指令之间的时间。
   rwq = new fifo_pipeline<dram_req_t>("rwq", m_config->CL, m_config->CL + 1);
   mrqq = new fifo_pipeline<dram_req_t>("mrqq", 0, 2);
   returnq = new fifo_pipeline<mem_fetch>(
@@ -168,7 +182,11 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
 }
 
 bool dram_t::full(bool is_write) const {
-  //scheduler_type在V100中配置为FR-FCFS。
+  //scheduler_type在V100中配置为FR-FCFS，即DRAM_FRFCFS。
+  //First-Row First-Come-First-Served scheduler gives higher priority to requests to a 
+  //currently open row in any of the DRAM banks. The scheduler will schedule all requests 
+  //in the queue to open rows first. If no such request exists it will open a new row for 
+  //the oldest request. The code for this scheduler is located in dram_sched.h/.cc.
   if (m_config->scheduler_type == DRAM_FRFCFS) {
     //gpgpu_frfcfs_dram_sched_queue_size在V100中配置为64。
     if (m_config->gpgpu_frfcfs_dram_sched_queue_size == 0) return false;
@@ -368,7 +386,9 @@ void dram_t::cycle() {
   for (unsigned i = 0; i < m_config->nbk; i++) {
     if (bk[i]->mrq) memory_pending++;
   }
+  //对所有bank的读请求总次数。
   banks_1time += memory_pending;
+  //对任意bank有读请求的总拍数。
   if (memory_pending > 0) banks_acess_total++;
 
   unsigned int memory_pending_rw = 0;
@@ -420,6 +440,7 @@ void dram_t::cycle() {
   bool issued_col_cmd = false;
   bool issued_row_cmd = false;
 
+  //在V100配置中为1。
   if (m_config->dual_bus_interface) {
     // dual bus interface
     // issue one row command and one column command
