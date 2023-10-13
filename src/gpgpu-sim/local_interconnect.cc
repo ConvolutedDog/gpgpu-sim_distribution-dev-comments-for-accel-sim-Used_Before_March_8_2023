@@ -38,7 +38,7 @@
 #include "mem_fetch.h"
 
 /*
-Xbar路由器。
+Xbar路由器。子网络构造函数。
 */
 xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
                          unsigned n_shader, unsigned n_mem,
