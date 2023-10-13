@@ -53,12 +53,17 @@ class dram_req_t {
  public:
   dram_req_t(class mem_fetch *data, unsigned banks,
              unsigned dram_bnk_indexing_policy, class gpgpu_sim *gpu);
-
+  //行号。
   unsigned int row;
+  //列号。
   unsigned int col;
+  //bank号。
   unsigned int bk;
+  //请求的数据总字节数。
   unsigned int nbytes;
+  //请求的已传输的数据总字节数，当txbytes>=nbytes代表传输完成。
   unsigned int txbytes;
+  //
   unsigned int dqbytes;
   unsigned int age;
   unsigned int timestamp;
@@ -75,24 +80,40 @@ struct bankgrp_t {
 };
 
 struct bank_t {
+  //row to column delay - time required to activate a row before a read.
+  //RCD为Row Command Delay的缩写，是一个Row被Active之后，数据从DRAM cell到Sense Amp的拍数。
   unsigned int RCDc;
+  //row to column delay for a write command - time required to activate a row before a 
+  //write.
   unsigned int RCDWRc;
+  //time needed to activate row.
+  //RAS（RAS Active Time，又可以称为：Active to Prechage Delay）：预充电至内存行激活的最短
+  //周期。
   unsigned int RASc;
+  //row precharge ie. deactivate row.
+  //RPc（Row Precharge Time，又可以称为：Precharge to Active）：内存行地址控制器预充电时间，
+  //一般单位为单位时间周期。
   unsigned int RPc;
+  //row cycle time ie. precharge current, then activate different row.
+  //RCc（Row Cycle Time）：定义了同一bank两次行激活命令所间隔的最小时间，或者说是一个bank中完
+  //成一次行操作周期（Row Cycle）的时间。
   unsigned int RCc;
+  //time to switch from write to precharge in the same bank.
   unsigned int WTPc;  // write to precharge
+  //time to switch from read to precharge in the same bank.
+  //RTPc = m_config->BL / m_config->data_command_freq_ratio;
   unsigned int RTPc;  // read to precharge
 
   unsigned char rw;     // is the bank reading or writing?
   unsigned char state;  // is the bank active or idle?
   unsigned int curr_row;
-
+  //对当前bank的读请求。
   dram_req_t *mrq;
 
   unsigned int n_access;
   unsigned int n_writes;
   unsigned int n_idle;
-
+  //bank group index.
   unsigned int bkgrpindex;
 };
 
@@ -171,7 +192,9 @@ class dram_t {
 
   unsigned int pending_writes;
 
+  
   fifo_pipeline<dram_req_t> *rwq;
+  //memory request queue.
   fifo_pipeline<dram_req_t> *mrqq;
   // buffer to hold packets when DRAM processing is over
   // should be filled with dram clock and popped with l2or icnt clock
