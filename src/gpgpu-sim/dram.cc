@@ -168,8 +168,11 @@ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
 }
 
 bool dram_t::full(bool is_write) const {
+  //scheduler_type在V100中配置为FR-FCFS。
   if (m_config->scheduler_type == DRAM_FRFCFS) {
+    //gpgpu_frfcfs_dram_sched_queue_size在V100中配置为64。
     if (m_config->gpgpu_frfcfs_dram_sched_queue_size == 0) return false;
+    //dram_seperate_write_queue_enable在V100中配置为1。
     if (m_config->seperate_write_queue_enabled) {
       if (is_write)
         return m_frfcfs_scheduler->num_write_pending() >=
@@ -293,7 +296,11 @@ void dram_t::scheduler_fifo() {
   b ^= a;          \
   a ^= b;
 
+/*
+dram_t向前推进一拍。
+*/
 void dram_t::cycle() {
+  //returnq非满的话，可以将新的就绪的数据放入returnq。
   if (!returnq->full()) {
     dram_req_t *cmd = rwq->pop();
     if (cmd) {
