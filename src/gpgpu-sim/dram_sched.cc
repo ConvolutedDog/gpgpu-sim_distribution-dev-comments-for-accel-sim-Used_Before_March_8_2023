@@ -69,7 +69,9 @@ frfcfs_scheduler::frfcfs_scheduler(const memory_config *config, dram_t *dm,
   m_mode = READ_MODE;
 }
 
+
 void frfcfs_scheduler::add_req(dram_req_t *req) {
+  //dram_seperate_write_queue_enable在V100中配置为1。
   if (m_config->seperate_write_queue_enabled && req->data->is_write()) {
     assert(m_num_write_pending < m_config->gpgpu_frfcfs_dram_write_queue_size);
     m_num_write_pending++;
