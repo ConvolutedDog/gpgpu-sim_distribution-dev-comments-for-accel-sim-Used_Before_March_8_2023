@@ -2509,7 +2509,7 @@ void gpgpu_sim::cycle() {
           gpu_stall_icnt2sh++;
         }
       } else {
-        //如果内存子分区的m_L2_icnt_queue队列顶部的数据包失效，则也将这个失效的数据包也弹出。
+        //如果内存子分区的m_L2_icnt_queue队列顶部的数据包无效，则也将这个失效的数据包也弹出。
         m_memory_sub_partition[i]->pop();
       }
     }
