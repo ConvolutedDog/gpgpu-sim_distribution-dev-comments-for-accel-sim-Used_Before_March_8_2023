@@ -1212,7 +1212,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   //CHUNCK_SIZE大小的空间可以保存请求信息，因此互连网络的拥塞造成DRAM的停滞次数。
   gpu_stall_dramfull = 0;
   //由于互连拥塞导致DRAM Channel停滞的周期数。在从存储控制器向互连网络弹出时，如果互连网络中有空闲
-  //的缓冲区，则将内存请求推入互连网络。但是一旦互联网络中的缓冲区被占满，就会停止推送。由于互连网
+  //的缓冲区，则将内存请求推入互连网络。但是一旦互连网络中的缓冲区被占满，就会停止推送。由于互连网
   //络缓冲区的大小限制造成的停顿时钟周期数由gpu_stall_icnt2sh计数保存下来。
   gpu_stall_icnt2sh = 0;
   //自模拟器启动的第一个时钟周期开始，partiton_reqs_in_parallel就根据每一拍的内存分区产生的请求开始
@@ -1243,7 +1243,9 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     }
   }
 
+  //初始化互连网络的配置，指定互连网络的类型以及选择对应的Push/Pop等流程。
   icnt_wrapper_init();
+  //创建互连网络。
   icnt_create(m_shader_config->n_simt_clusters,
               m_memory_config->m_n_mem_sub_partition);
 
@@ -1429,6 +1431,8 @@ bool gpgpu_sim::active() {
   for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
     if (m_memory_partition_unit[i]->busy() > 0) return true;
   ;
+  //icnt_busy()判断互连网络是否处于Busy状态。有任意一个子网络处于Busy状态便认为
+  //整个互连网络处于Busy状态。
   if (icnt_busy()) return true;
   if (get_more_cta_left()) return true;
   return false;
@@ -1596,6 +1600,8 @@ void gpgpu_sim::deadlock_check() {
       if (busy)
         printf("GPGPU-Sim uArch DEADLOCK:  memory partition %u busy\n", i);
     }
+    //icnt_busy()判断互连网络是否处于Busy状态。有任意一个子网络处于Busy状态便认为
+    //整个互连网络处于Busy状态。
     if (icnt_busy()) {
       printf("GPGPU-Sim uArch DEADLOCK:  iterconnect contains traffic\n");
       icnt_display_state(stdout);
@@ -1777,7 +1783,7 @@ void gpgpu_sim::gpu_print_stat() {
   //CHUNCK_SIZE大小的空间可以保存请求信息，因此互连网络的拥塞造成DRAM的停滞次数。
   printf("gpu_stall_dramfull = %d\n", gpu_stall_dramfull);
   //在从存储控制器向互连网络弹出时，如果互连网络中有空闲的缓冲区，则将内存请求推入互连网络。但是一旦
-  //互联网络中的缓冲区被占满，就会停止推送。由于互连网络缓冲区的大小限制造成的停顿时钟周期数由gpu_st
+  //互连网络中的缓冲区被占满，就会停止推送。由于互连网络缓冲区的大小限制造成的停顿时钟周期数由gpu_st
   //all_icnt2sh计数保存下来。
   printf("gpu_stall_icnt2sh    = %d\n", gpu_stall_icnt2sh);
 
@@ -2494,12 +2500,14 @@ void gpgpu_sim::cycle() {
         unsigned response_size =
             mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
         //在从内存子分区向互连网络弹出时，如果互连网络中有空闲的缓冲区，则将内存请求推入互连网络。但是
-        //一旦互联网络中的缓冲区被占满，就会停止推送。由于互连网络缓冲区的大小限制造成的停顿时钟周期数
+        //一旦互连网络中的缓冲区被占满，就会停止推送。由于互连网络缓冲区的大小限制造成的停顿时钟周期数
         //由gpu_stall_icnt2sh计数保存下来。
+        //icnt_has_buffer是判断互连网络是否有空闲的输入缓冲可以容纳来自deviceID号设备新的数据包。
         if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
           // if (!mf->get_is_write())
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
+          //icnt_push是数据包压入互连网络输入缓冲区。
           ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
                       response_size);
           //m_memory_sub_partition[i]中都有各自的m_icnt_L2_queue队列，这是ICNT给SM数据包的接口。
@@ -2584,6 +2592,7 @@ void gpgpu_sim::cycle() {
         //如果m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)返回False，代表m_L2_icnt_queue
         //队列放得下SECTOR_CHUNCK_SIZE=4大小的数据，因此可以将数据读请求mf从互连网络推入到内存子分区
         //来进行取数据处理。
+        //icnt_pop()是数据包弹出互连网络输出缓冲区。
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
         //将数据读请求m_req从互连网络推入到内存子分区来进行后续取数据处理。
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
@@ -2609,6 +2618,7 @@ void gpgpu_sim::cycle() {
   }
 
   if (clock_mask & ICNT) {
+    //互连网络执行路由一拍。
     icnt_transfer();
   }
   //如果推进的是SIMT Core时钟域。
