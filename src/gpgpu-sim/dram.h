@@ -161,10 +161,10 @@ class dram_t {
   bool issue_col_command(int j);
   bool issue_row_command(int j);
 
-  unsigned int RRDc;
-  unsigned int CCDc;
-  unsigned int RTWc;  // read to write penalty applies across banks
-  unsigned int WTRc;  // write to read penalty applies across banks
+  unsigned int RRDc;  // Row to Row Delay
+  unsigned int CCDc;  // Column to Column Delay
+  unsigned int RTWc;  // read to write penalty applies across banks, time to switch from read to write
+  unsigned int WTRc;  // write to read penalty applies across banks, time to switch from write to read
 
   unsigned char
       rw;  // was last request a read or write? (important for RTW, WTR)
