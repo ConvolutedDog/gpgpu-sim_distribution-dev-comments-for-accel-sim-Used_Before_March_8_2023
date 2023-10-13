@@ -38,6 +38,12 @@
 
 enum memory_mode { READ_MODE = 0, WRITE_MODE };
 
+/*
+First-Row First-Come-First-Served scheduler gives higher priority to requests to a 
+currently open row in any of the DRAM banks. The scheduler will schedule all requests 
+in the queue to open rows first. If no such request exists it will open a new row for 
+the oldest request. The code for this scheduler is located in dram_sched.h/.cc.
+*/
 class frfcfs_scheduler {
  public:
   frfcfs_scheduler(const memory_config *config, dram_t *dm,
