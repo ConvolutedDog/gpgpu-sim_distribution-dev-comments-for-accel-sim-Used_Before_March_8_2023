@@ -1424,6 +1424,17 @@ class baseline_cache : public cache_t {
   bool waiting_for_fill(mem_fetch *mf);
   // Are any (accepted) accesses that had to wait for memory now ready? (does
   // not include accesses that "HIT")
+  //未命中状态保持寄存器，the miss status holding register，MSHR。MSHR的模型是用mshr_table类来
+  //模拟一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有
+  //固定数量的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR
+  //条目的数量和每个条目的最大请求数是可配置的。
+  //缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未
+  //命中处理逻辑将首先检查未命中状态保持寄存器（MSHR），以查看当前是否有来自先前请求的相同请求挂起。
+  //如果是，则此请求将合并到同一条目中，并且不需要发出新的数据请求。否则，将为该数据请求保留一个新的
+  //MSHR条目和缓存行。缓存状态处理程序可能会在资源不可用时失败，例如没有可用的MSHR条目、该集中的所
+  //有缓存块都已保留但尚未填充、未命中队列已满等。
+  //这里m_mshrs.access_ready()返回的是就绪内存访问的列表m_current_response是否非空，就绪内存访问
+  //的列表仅存储了就绪内存访问的地址。如果存在已经被填入MSHR条目的访问，则返回true。
   bool access_ready() const { return m_mshrs.access_ready(); }
   // Pop next ready access (does not include accesses that "HIT")
   mem_fetch *next_access() { return m_mshrs.next_access(); }
