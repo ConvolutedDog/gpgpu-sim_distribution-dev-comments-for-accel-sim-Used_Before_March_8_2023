@@ -63,6 +63,7 @@ struct inct_config {
 */
 class xbar_router {
  public:
+  //Xbar路由器。子网络构造函数。
   xbar_router(unsigned router_id, enum Interconnect_type m_type,
               unsigned n_shader, unsigned n_mem,
               const struct inct_config& m_localinct_config);
