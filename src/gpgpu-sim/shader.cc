@@ -7452,6 +7452,7 @@ void simt_core_cluster::cache_invalidate() {
 bool simt_core_cluster::icnt_injection_buffer_full(unsigned size, bool write) {
   unsigned request_size = size;
   if (!write) request_size = READ_PACKET_SIZE;
+  //icnt_has_buffer是判断互连网络是否有空闲的输入缓冲可以容纳来自deviceID号设备新的数据包。
   return !::icnt_has_buffer(m_cluster_id, request_size);
 }
 
@@ -7517,9 +7518,11 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
   mf->set_status(IN_ICNT_TO_MEM,
                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   if (!mf->get_is_write() && !mf->isatomic())
+    //icnt_push是数据包压入互连网络输入缓冲区。
     ::icnt_push(m_cluster_id, m_config->mem2device(destination), (void *)mf,
                 mf->get_ctrl_size());
   else
+    //icnt_push是数据包压入互连网络输入缓冲区。
     ::icnt_push(m_cluster_id, m_config->mem2device(destination), (void *)mf,
                 mf->size());
 }
@@ -7608,6 +7611,7 @@ void simt_core_cluster::icnt_cycle() {
   //里m_response_fifo.size()是指m_response_fifo中的数据包数量，当m_response_fifo为空时，size=0。
   if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
     //这里mem_fetch *mf指的是互连网络继续向SIMT Core集群的响应FIFO里弹出的下一个数据包。
+    //icnt_pop是数据包弹出互连网络输出缓冲区。
     mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
     //如果没弹出来，说明互连网络的弹出缓冲区（由互连网络->SIMT Core集群）为空，互连网络没有新的数据包要向
     //SIMT Core集群传输。
