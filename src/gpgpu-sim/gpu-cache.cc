@@ -259,6 +259,10 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
   }
 }
 
+/*
+判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS
+/RESERVATION_FAIL等状态。
+*/
 enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            mem_fetch *mf, bool is_write,
                                            bool probe_mode) const {
@@ -266,6 +270,10 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   return probe(addr, idx, mask, is_write, probe_mode, mf);
 }
 
+/*
+判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS
+/RESERVATION_FAIL等状态。
+*/
 enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
                                            bool is_write, bool probe_mode,
@@ -276,6 +284,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   //为了便于起见，这里的标记包括index和Tag。这允许更复杂的（可能导致不同的indexes映射到
   //同一set）set index计算，因此需要完整的标签 + 索引来检查命中/未命中。Tag现在与块地址
   //相同。
+  //这里实际返回的是除offset位以外的所有位，即set index也作为tag的一部分了。
   new_addr_type tag = m_config.tag(addr);
 
   unsigned invalid_line = (unsigned)-1;
@@ -298,7 +307,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     // Tag相符。
     if (line->m_tag == tag) {
       if (line->get_status(mask) == RESERVED) {
-        //如果Cache block[mask]状态是RESERVED，说明有其他的线程正在加载这个Cache block。
+        //如果Cache block[mask]状态是RESERVED，说明有其他的线程正在读取这个Cache block。
         //挂起的命中访问已命中处于RESERVED状态的缓存行，这意味着同一行上已存在由先前缓存未
         //命中发送的flying内存请求。
         idx = index;
@@ -309,7 +318,13 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
         //如果Cache block[mask]状态是MODIFIED，说明已经被其他线程修改，如果当前访问也是写
-        //操作的话即为命中，但如果不是写操作则为SECTOR_MISS。
+        //操作的话即为命中，但如果不是写操作则需要判断是否mask标志的块是否修改完毕，修改完毕
+        //则为命中，修改不完成则为SECTOR_MISS。因为L1 cache与L2 cache写命中时，采用write-
+        //back策略，只将数据写入该block，并不直接更新下级存储，只有当这个块被替换时，才将数
+        //据写回下级存储。
+        //is_readable(mask)是判断mask标志的sector是否已经全部写完成，因为在修改cache的过程
+        //中，有一个sector被修改即算作当前cache块MODIFIED，但是修改过程可能不是一下就能写完，
+        //因此需要判断一下是否全部写完才可以算作读命中。
         if ((!is_write && line->is_readable(mask)) || is_write) {
           idx = index;
           return HIT;
@@ -326,6 +341,10 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       }
     }
     //如果当前Cache Line的状态不是RESERVED。
+    //到当前阶段，抛开前面能够确定的HIT，HIT_RESERVED，SECTOR_MISS，还剩下MISS/RESERVATION
+    //_FAIL/MSHR_HIT三种状态。也就是说，在没有Hit，也没有HIT_RESERVED，也没有SECTOR_MISS的
+    //情况下，需要逐出一个块，来给新访问提供RESERVE的空间。
+    //line->is_reserved_line()：只要有一个sector是RESERVED，就认为这个cache line是RESERVED。
     if (!line->is_reserved_line()) {
       // percentage of dirty lines in the cache
       // number of dirty lines / total lines in the cache
@@ -335,16 +354,29 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       // or the total dirty cacheline is above a specific value,
       // Then this cacheline is eligible to be considered for replacement candidate
       // i.e. Only evict clean cachelines until total dirty cachelines reach the limit.
-      //在V100中配置为25%。
+      //m_config.m_wr_percent在V100中配置为25%。
+      //line->is_modified_line()：只要有一个sector是MODIFIED，就认为这个cache line是MODIFIED。
       if (!line->is_modified_line() ||
           dirty_line_percentage >= m_config.m_wr_percent) 
       {
+        //一个cache line的状态有：INVALID = 0, RESERVED, VALID, MODIFIED，如果它是VALID，
+        //就在上面的代码命中了
+        //因为在逐出一个cache块时，优先逐出一个干净的块，即没有sector被RESERVED，也没有sector
+        //被MODIFIED，来逐出；但是如果dirty的cache line的比例超过m_wr_percent（V100中配置为
+        //25%），也可以不满足MODIFIED的条件。
+        
+        //all_reserved被初始化为true，是指所有cache line都没有能够逐出来为新访问提供RESERVE
+        //的空间，这里一旦满足上面两个if条件，说明当前line可以被逐出来提供空间供RESERVE新访问，
+        //这里all_reserved置为false。而一旦最终all_reserved仍旧保持true的话，就说明当前line
+        //不可被逐出，发生RESERVATION_FAIL。
         all_reserved = false;
+        //line->is_invalid_line()是所有sector都无效。
         if (line->is_invalid_line()) {
           invalid_line = index;
         } else {
           // valid line : keep track of most appropriate replacement candidate
           if (m_config.m_replacement_policy == LRU) {
+            //valid_timestamp设置为最近最少被使用的cache line的最末次访问时间。
             if (line->get_last_access_time() < valid_timestamp) {
               valid_timestamp = line->get_last_access_time();
               valid_line = index;
@@ -359,6 +391,17 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       }
     }
   }
+  //Cache访问的状态包含：
+  //    HIT，HIT_RESERVED，MISS，RESERVATION_FAIL，SECTOR_MISS，MSHR_HIT六种状态。
+  //抛开前面能够确定的HIT，HIT_RESERVED，SECTOR_MISS还能够判断MISS/RESERVATION_FAIL
+  //两种状态是否成立。
+  //因为在逐出一个cache块时，优先逐出一个干净的块，即没有sector被RESERVED，也没有sector
+  //被MODIFIED，来逐出；但是如果dirty的cache line的比例超过m_wr_percent（V100中配置为
+  //25%），也可以不满足MODIFIED的条件。
+  //all_reserved被初始化为true，是指所有cache line都没有能够逐出来为新访问提供RESERVE
+  //的空间，这里一旦满足上面两个if条件，说明cache line可以被逐出来提供空间供RESERVE新访
+  //问，这里all_reserved置为false。而一旦最终all_reserved仍旧保持true的话，就说明cache
+  //line不可被逐出，发生RESERVATION_FAIL。
   if (all_reserved) {
     assert(m_config.m_alloc_policy == ON_MISS);
     return RESERVATION_FAIL;  // miss and not enough space in cache to allocate
@@ -382,6 +425,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   //  }
   //}
 
+  //如果上面的cache line可以被逐出来reserve新访问，则返回MISS。
   return MISS;
 }
 
@@ -1827,6 +1871,9 @@ enum cache_request_status data_cache::wr_miss_no_wa(
 
 // Baseline read hit: Update LRU status of block.
 // Special case for atomic instructions -> Mark block as modified
+/*
+
+*/
 enum cache_request_status data_cache::rd_hit_base(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
