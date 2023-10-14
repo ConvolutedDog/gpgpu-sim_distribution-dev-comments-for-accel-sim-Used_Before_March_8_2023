@@ -45,13 +45,23 @@
 
 /*
 cache block的状态，包含：
-HIT: 
-RESERVED: 为尚未完成的缓存未命中提供的数据提供空间
+INVALID: Cache block有效，但是其中的byte mask=Cache block[mask]状态INVALID，说明sector
+         缺失。
+MODIFIED: 如果Cache block[mask]状态是MODIFIED，说明已经被其他线程修改，如果当前访问也是写
+          操作的话即为命中，但如果不是写操作则需要判断是否mask标志的块是否修改完毕，修改完毕
+          则为命中，修改不完成则为SECTOR_MISS。因为L1 cache与L2 cache写命中时，采用write-
+          back策略，只将数据写入该block，并不直接更新下级存储，只有当这个块被替换时，才将数
+          据写回下级存储。
+VALID: 如果Cache block[mask]状态是VALID，说明已经命中。
+RESERVED: 为尚未完成的缓存未命中的数据提供空间。Cache block[mask]状态是RESERVED，说明有其
+          他的线程正在读取这个Cache block。挂起的命中访问已命中处于RESERVED状态的缓存行，
+          这意味着同一行上已存在由先前缓存未命中发送的flying内存请求。
 */
 enum cache_block_state { INVALID = 0, RESERVED, VALID, MODIFIED };
 
 /*
-对Cache请求的状态。
+对Cache请求的状态。包括：
+HIT，HIT_RESERVED，MISS，RESERVATION_FAIL，SECTOR_MISS，MSHR_HIT六种状态。
 */
 enum cache_request_status {
   //命中。
@@ -62,6 +72,9 @@ enum cache_request_status {
   MISS,
   //保留失败。
   RESERVATION_FAIL,
+  //如果Cache block[mask]状态是MODIFIED，说明已经被其他线程修改，如果当前访问也是写
+  //操作的话即为命中，但如果不是写操作则需要判断是否mask标志的块是否修改完毕，修改完毕
+  //则为命中，修改不完成则为SECTOR_MISS。
   SECTOR_MISS,
   MSHR_HIT,
   NUM_CACHE_REQUEST_STATUS
@@ -873,6 +886,7 @@ class cache_config {
     // for hit/miss. Tag is now identical to the block address.
 
     // return addr >> (m_line_sz_log2+m_nset_log2);
+    //这里实际返回的是除offset位以外的所有位，即set index也作为tag的一部分了。
     return addr & ~(new_addr_type)(m_line_sz - 1);
   }
   new_addr_type block_addr(new_addr_type addr) const {
@@ -1015,10 +1029,13 @@ class tag_array {
   // Use this constructor
   tag_array(cache_config &config, int core_id, int type_id);
   ~tag_array();
-
+  //判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/
+  //MISS/RESERVATION_FAIL等状态。
   enum cache_request_status probe(new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   bool probe_mode = false) const;
+  //判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/
+  //MISS/RESERVATION_FAIL等状态。
   enum cache_request_status probe(new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   bool probe_mode = false,
@@ -1820,6 +1837,16 @@ class data_cache : public baseline_cache {
 // It is write-evict (global) or write-back (local) at
 // the granularity of individual blocks
 // (the policy used in fermi according to the CUDA manual)
+// L1 cache采取的写策略：
+//     对L1 cache写不命中时，采用write-allocate策略，将缺失块从下级存储调入L1 cache，
+//                          并在L1 cache中修改。
+//     对L1 cache写命中时，采用write-back策略，只写入L1 cache，不直接写入下级存储，在
+//                          L1 cache的sector被逐出时才将数据写回下级缓存。
+// L2 cache采取的写策略：
+//     对L2 cache写不命中时，采用write-allocate策略，将缺失块从DRAM调入L2 cache，并在
+//                          L2 cache中修改。
+//     对L2 cache写命中时，采用write-back策略，只写入L2 cache，并不直接写入DRAM，在L2 
+//                          cache的sector被逐出时才将数据写回DRAM。
 class l1_cache : public data_cache {
  public:
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
@@ -1845,6 +1872,16 @@ class l1_cache : public data_cache {
 
 // Models second level shared cache with global write-back
 // and write-allocate policies
+// L1 cache采取的写策略：
+//     对L1 cache写不命中时，采用write-allocate策略，将缺失块从下级存储调入L1 cache，
+//                          并在L1 cache中修改。
+//     对L1 cache写命中时，采用write-back策略，只写入L1 cache，不直接写入下级存储，在
+//                          L1 cache的sector被逐出时才将数据写回下级缓存。
+// L2 cache采取的写策略：
+//     对L2 cache写不命中时，采用write-allocate策略，将缺失块从DRAM调入L2 cache，并在
+//                          L2 cache中修改。
+//     对L2 cache写命中时，采用write-back策略，只写入L2 cache，并不直接写入DRAM，在L2 
+//                          cache的sector被逐出时才将数据写回DRAM。
 class l2_cache : public data_cache {
  public:
   l2_cache(const char *name, cache_config &config, int core_id, int type_id,
