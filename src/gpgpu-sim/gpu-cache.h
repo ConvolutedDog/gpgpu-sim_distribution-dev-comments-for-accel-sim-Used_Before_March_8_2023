@@ -208,6 +208,7 @@ struct cache_block_t {
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
   virtual unsigned long long get_alloc_time() = 0;
+  //在当前版本的GPGPU-Sim中，set_ignore_on_fill暂时用不到。
   virtual void set_ignore_on_fill(bool m_ignore,
                                   mem_access_sector_mask_t sector_mask) = 0;
   virtual void set_modified_on_fill(bool m_modified,
@@ -234,6 +235,7 @@ struct line_cache_block : public cache_block_t {
     m_last_access_time = 0;
     //Cache line的状态，包括 INVALID = 0, RESERVED, VALID, MODIFIED。
     m_status = INVALID;
+    //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
     m_set_readable_on_fill = false;
@@ -256,6 +258,7 @@ struct line_cache_block : public cache_block_t {
     m_fill_time = 0;
     //cache line的状态
     m_status = RESERVED;
+    //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
     m_set_readable_on_fill = false;
@@ -310,8 +313,10 @@ struct line_cache_block : public cache_block_t {
     m_last_access_time = time;
   }
   virtual unsigned long long get_alloc_time() { return m_alloc_time; }
+  //在当前版本的GPGPU-Sim中，set_ignore_on_fill暂时用不到。
   virtual void set_ignore_on_fill(bool m_ignore,
                                   mem_access_sector_mask_t sector_mask) {
+    //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status = m_ignore;
   }
   virtual void set_modified_on_fill(bool m_modified,
@@ -344,6 +349,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_last_access_time;
   unsigned long long m_fill_time;
   cache_block_state m_status;
+  //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
   bool m_ignore_on_fill_status;
   bool m_set_modified_on_fill;
   bool m_set_readable_on_fill;
@@ -363,7 +369,10 @@ struct sector_cache_block : public cache_block_t {
       //第i个sector被访问的时间，被访问包括第一次分配时的时间，也包括后续HIT该sector的时间。
       m_last_sector_access_time[i] = 0;
       m_status[i] = INVALID;
+      //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
       m_ignore_on_fill_status[i] = false;
+      //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
+      //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
       m_set_modified_on_fill[i] = false;
       m_set_readable_on_fill[i] = false;
       m_readable[i] = true;
@@ -398,7 +407,10 @@ struct sector_cache_block : public cache_block_t {
     m_sector_fill_time[sidx] = 0;
     //设置第sidx个sector为RESERVED。
     m_status[sidx] = RESERVED;
+    //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status[sidx] = false;
+    //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
+    //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
     m_set_modified_on_fill[sidx] = false;
     m_set_readable_on_fill[sidx] = false;
     m_set_byte_mask_on_fill = false;
@@ -412,6 +424,9 @@ struct sector_cache_block : public cache_block_t {
   void allocate_sector(unsigned time, mem_access_sector_mask_t sector_mask) {
     // allocate invalid sector of this allocated valid line
     assert(is_valid_line());
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
 
     // set sector stats
@@ -420,6 +435,8 @@ struct sector_cache_block : public cache_block_t {
     //第sidx个sector被访问的时间，被访问包括第一次分配时的时间，也包括后续HIT该sector的时间。
     m_last_sector_access_time[sidx] = time;
     m_sector_fill_time[sidx] = 0;
+    //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache block
+    //是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
     if (m_status[sidx] == MODIFIED)  // this should be the case only for
                                      // fetch-on-write policy //TO DO
       m_set_modified_on_fill[sidx] = true;
@@ -429,6 +446,7 @@ struct sector_cache_block : public cache_block_t {
     m_set_readable_on_fill[sidx] = false;
 
     m_status[sidx] = RESERVED;
+    //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status[sidx] = false;
     // m_set_modified_on_fill[sidx] = false;
     m_readable[sidx] = true;
@@ -440,17 +458,29 @@ struct sector_cache_block : public cache_block_t {
 
   virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
                     mem_access_byte_mask_t byte_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
 
     //	if(!m_ignore_on_fill_status[sidx])
     //	         assert( m_status[sidx] == RESERVED );
-
+    //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
+    //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
     m_status[sidx] = m_set_modified_on_fill[sidx] ? MODIFIED : VALID;
 
     if (m_set_readable_on_fill[sidx]) {
       m_readable[sidx] = true;
       m_set_readable_on_fill[sidx] = false;
     }
+    //在FETCH_ON_READ policy: https://arxiv.org/pdf/1810.07269.pdf 中提到，访问cache发生
+    //miss时：
+    // In the write-validate policy, no read fetch is required, instead each sector has 
+    // a bit-wise write-mask. When a write to a single byte is received, it writes the 
+    // byte to the sector, sets the corresponding write bit and sets the sector as valid 
+    // and modified. When a modified cache line is evicted, the cache line is written 
+    // back to the memory along with the write mask.
+    //而在FETCH_ON_READ中，需要设置sector的byte mask。这里就是指设置这个byte mask的标志。
     if (m_set_byte_mask_on_fill) set_byte_mask(byte_mask);
 
     m_sector_fill_time[sidx] = time;
@@ -481,6 +511,9 @@ struct sector_cache_block : public cache_block_t {
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
 
     return m_status[sidx];
@@ -488,6 +521,9 @@ struct sector_cache_block : public cache_block_t {
 
   virtual void set_status(enum cache_block_state status,
                           mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
     m_status[sidx] = status;
   }
@@ -516,6 +552,9 @@ struct sector_cache_block : public cache_block_t {
   //访问状态为Hit时才会设置。
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
     //第sidx个sector被访问的时间，这里被访问是HIT该sector的时间。
     m_last_sector_access_time[sidx] = time;
@@ -523,15 +562,24 @@ struct sector_cache_block : public cache_block_t {
   }
 
   virtual unsigned long long get_alloc_time() { return m_line_alloc_time; }
-
+  //在当前版本的GPGPU-Sim中，set_ignore_on_fill暂时用不到。
   virtual void set_ignore_on_fill(bool m_ignore,
                                   mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
+    //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status[sidx] = m_ignore;
   }
 
+  //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
+  //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
   virtual void set_modified_on_fill(bool m_modified,
                                     mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
     m_set_modified_on_fill[sidx] = m_modified;
   }
@@ -541,16 +589,25 @@ struct sector_cache_block : public cache_block_t {
 
   virtual void set_readable_on_fill(bool readable,
                                     mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
     m_set_readable_on_fill[sidx] = readable;
   }
   virtual void set_m_readable(bool readable,
                               mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
     m_readable[sidx] = readable;
   }
 
   virtual bool is_readable(mem_access_sector_mask_t sector_mask) {
+    //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+    //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+    //例如0001返回0，0010返回1，0100返回2，1000返回3。
     unsigned sidx = get_sector_index(sector_mask);
     return m_readable[sidx];
   }
@@ -579,13 +636,19 @@ struct sector_cache_block : public cache_block_t {
   unsigned m_line_fill_time;
   //每个sector的状态，包括INVALID = 0, RESERVED, VALID, MODIFIED。
   cache_block_state m_status[SECTOR_CHUNCK_SIZE];
+  //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
   bool m_ignore_on_fill_status[SECTOR_CHUNCK_SIZE];
+  //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
+  //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
   bool m_set_modified_on_fill[SECTOR_CHUNCK_SIZE];
   bool m_set_readable_on_fill[SECTOR_CHUNCK_SIZE];
   bool m_set_byte_mask_on_fill;
   bool m_readable[SECTOR_CHUNCK_SIZE];
   mem_access_byte_mask_t m_dirty_byte_mask;
 
+  //sector_mask是要访问的sector的mask，例如V100中每个cache block有4个sector，那么这个
+  //sector_mask就有可能是0001/0010/0100/1000，这里是判断mask为1的sector属于第几个sector
+  //例如0001返回0，0010返回1，0100返回2，1000返回3。
   unsigned get_sector_index(mem_access_sector_mask_t sector_mask) {
     assert(sector_mask.count() == 1);
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
