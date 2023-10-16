@@ -884,9 +884,10 @@ class memory_space_t {
 const unsigned MAX_MEMORY_ACCESS_SIZE = 128;
 //用于标记一次访存操作中的数据字节掩码，MAX_MEMORY_ACCESS_SIZE设置为128，即每次访存最大数据128字节。
 typedef std::bitset<MAX_MEMORY_ACCESS_SIZE> mem_access_byte_mask_t;
+//一个cache line包含SECTOR_CHUNCK_SIZE=4个sectors。
 const unsigned SECTOR_CHUNCK_SIZE = 4;  // four sectors
 const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
-//用于标记一次访存操作中的扇区掩码，4个扇区，每个扇区32个字节数据。
+//用于标记一次访存操作中的sector掩码，4个sector，每个sector32个字节数据。
 typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
 #define NO_PARTIAL_WRITE (mem_access_byte_mask_t())
 
