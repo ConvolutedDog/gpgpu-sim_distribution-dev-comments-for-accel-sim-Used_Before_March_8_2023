@@ -121,7 +121,7 @@ struct evicted_block_info {
     m_block_addr = block_addr;
     m_modified_size = modified_size;
   }
-  //设置被逐出的cache line的信息。
+  //设置被逐出的cache block的信息。
   void set_info(new_addr_type block_addr, unsigned modified_size,
                 mem_access_byte_mask_t byte_mask,
                 mem_access_sector_mask_t sector_mask) {
@@ -182,7 +182,7 @@ struct cache_block_t {
     //block的起始地址。
     m_block_addr = 0;
   }
-  //已经选定m_lines[idx]作为逐出并reserve新访问的cache line，这里执行对新访问的reserve操作。
+  //已经选定m_lines[idx]作为逐出并reserve新访问的cache block，这里执行对新访问的reserve操作。
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         unsigned time,
                         mem_access_sector_mask_t sector_mask) = 0;
@@ -203,7 +203,7 @@ struct cache_block_t {
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
   virtual mem_access_sector_mask_t get_dirty_sector_mask() = 0;
   virtual unsigned long long get_last_access_time() = 0;
-  //设置当前cache line的最末次访问时间，包括sector的访问时间和line的访问时间。只有
+  //设置当前cache block的最末次访问时间，包括sector的访问时间和line的访问时间。只有
   //访问状态为Hit时才会设置。
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
@@ -233,7 +233,7 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = 0;
     m_fill_time = 0;
     m_last_access_time = 0;
-    //Cache line的状态，包括 INVALID = 0, RESERVED, VALID, MODIFIED。
+    //cache block的状态，包括 INVALID = 0, RESERVED, VALID, MODIFIED。
     m_status = INVALID;
     //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status = false;
@@ -256,7 +256,7 @@ struct line_cache_block : public cache_block_t {
     //上次访问时间
     m_last_access_time = time;
     m_fill_time = 0;
-    //cache line的状态
+    //cache block的状态
     m_status = RESERVED;
     //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
     m_ignore_on_fill_status = false;
@@ -277,7 +277,7 @@ struct line_cache_block : public cache_block_t {
 
     m_fill_time = time;
   }
-  //返回Cache line的状态。
+  //返回cache block的状态。
   virtual bool is_invalid_line() { return m_status == INVALID; }
   virtual bool is_valid_line() { return m_status == VALID; }
   virtual bool is_reserved_line() { return m_status == RESERVED; }
@@ -331,7 +331,7 @@ struct line_cache_block : public cache_block_t {
     m_set_byte_mask_on_fill = m_modified;
   }
   virtual unsigned get_modified_size() {
-    return SECTOR_CHUNCK_SIZE * SECTOR_SIZE;  // i.e. cache line size
+    return SECTOR_CHUNCK_SIZE * SECTOR_SIZE;  // i.e. cache block size
   }
   virtual void set_m_readable(bool readable,
                               mem_access_sector_mask_t sector_mask) {
@@ -383,13 +383,13 @@ struct sector_cache_block : public cache_block_t {
     m_dirty_byte_mask.reset();
   }
   
-  //已经选定m_lines[idx]作为逐出并reserve新访问的cache line，这里执行对新访问的reserve操作。
+  //已经选定m_lines[idx]作为逐出并reserve新访问的cache block，这里执行对新访问的reserve操作。
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         unsigned time, mem_access_sector_mask_t sector_mask) {
     allocate_line(tag, block_addr, time, sector_mask);
   }
 
-  //已经选定m_lines[idx]作为逐出并reserve新访问的cache line，这里执行对新访问的reserve操作。
+  //已经选定m_lines[idx]作为逐出并reserve新访问的cache block，这里执行对新访问的reserve操作。
   void allocate_line(new_addr_type tag, new_addr_type block_addr, unsigned time,
                      mem_access_sector_mask_t sector_mask) {
     // allocate a new line
@@ -478,7 +478,7 @@ struct sector_cache_block : public cache_block_t {
     // In the write-validate policy, no read fetch is required, instead each sector has 
     // a bit-wise write-mask. When a write to a single byte is received, it writes the 
     // byte to the sector, sets the corresponding write bit and sets the sector as valid 
-    // and modified. When a modified cache line is evicted, the cache line is written 
+    // and modified. When a modified cache block is evicted, the cache block is written 
     // back to the memory along with the write mask.
     //而在FETCH_ON_READ中，需要设置sector的byte mask。这里就是指设置这个byte mask的标志。
     if (m_set_byte_mask_on_fill) set_byte_mask(byte_mask);
@@ -548,7 +548,7 @@ struct sector_cache_block : public cache_block_t {
     return m_line_last_access_time;
   }
 
-  //设置当前cache line的最末次访问时间，包括sector的访问时间和line的访问时间。只有
+  //设置当前cache block的最末次访问时间，包括sector的访问时间和line的访问时间。只有
   //访问状态为Hit时才会设置。
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
@@ -808,8 +808,8 @@ class cache_config {
       basis, see shader.cc, max_cta() function
 
       (2) We also set the MSHRs to be equal to max
-      allocated cache lines. This is possible by moving TAG to be shared
-      between cache line and MSHR enrty (i.e. for each cache line, there is
+      allocated cache blocks. This is possible by moving TAG to be shared
+      between cache block and MSHR enrty (i.e. for each cache block, there is
       an MSHR rntey associated with it). This is the easiest think we can
       think of to model (mimic) L1 streaming cache in Pascal and Volta
 
@@ -1024,7 +1024,7 @@ class cache_config {
 
   bool m_valid;
   bool m_disabled;
-  //cache line的大小，以字节为单位。
+  //cache block的大小，以字节为单位。
   unsigned m_line_sz;
   //m_line_sz_log2 = log2(m_line_sz)。
   unsigned m_line_sz_log2;
@@ -1248,7 +1248,7 @@ class tag_array {
 /*
 未命中状态保持寄存器，the miss status holding register，MSHR。MSHR的模型是用mshr_table类来模拟
 一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有固定数量
-的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR条目的数量和每
+的MSHR条目。每个MSHR条目可以为单个缓存行（cache block）提供固定数量的未命中请求。MSHR条目的数量和每
 个条目的最大请求数是可配置的。
 
 缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未命中
@@ -1577,7 +1577,7 @@ class baseline_cache : public cache_t {
   // not include accesses that "HIT")
   //未命中状态保持寄存器，the miss status holding register，MSHR。MSHR的模型是用mshr_table类来
   //模拟一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有
-  //固定数量的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR
+  //固定数量的MSHR条目。每个MSHR条目可以为单个缓存行（cache block）提供固定数量的未命中请求。MSHR
   //条目的数量和每个条目的最大请求数是可配置的。
   //缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未
   //命中处理逻辑将首先检查未命中状态保持寄存器（MSHR），以查看当前是否有来自先前请求的相同请求挂起。
@@ -1654,7 +1654,7 @@ class baseline_cache : public cache_t {
   tag_array *m_tag_array;
   //未命中状态保持寄存器，the miss status holding register，MSHR。MSHR的模型是用mshr_table类来
   //模拟一个具有有限数量的合并请求的完全关联表。请求通过next_access()函数从MSHR中释放。MSHR表具有
-  //固定数量的MSHR条目。每个MSHR条目可以为单个缓存行（Cache Line）提供固定数量的未命中请求。MSHR
+  //固定数量的MSHR条目。每个MSHR条目可以为单个缓存行（cache block）提供固定数量的未命中请求。MSHR
   //条目的数量和每个条目的最大请求数是可配置的。
   //缓存未命中状态保持寄存器。缓存命中后，将立即向寄存器文件发送数据，以满足请求。在缓存未命中时，未
   //命中处理逻辑将首先检查未命中状态保持寄存器（MSHR），以查看当前是否有来自先前请求的相同请求挂起。
