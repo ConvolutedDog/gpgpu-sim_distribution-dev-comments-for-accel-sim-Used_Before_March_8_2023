@@ -121,12 +121,17 @@ struct evicted_block_info {
     m_block_addr = block_addr;
     m_modified_size = modified_size;
   }
+  //设置被逐出的cache line的信息。
   void set_info(new_addr_type block_addr, unsigned modified_size,
                 mem_access_byte_mask_t byte_mask,
                 mem_access_sector_mask_t sector_mask) {
+    //地址。
     m_block_addr = block_addr;
+    //被modified的sector数量。
     m_modified_size = modified_size;
+    //字节mask。
     m_byte_mask = byte_mask;
+    //sector mask。
     m_sector_mask = sector_mask;
   }
 };
@@ -170,13 +175,14 @@ Cache block类。
 struct cache_block_t {
   //构造函数。
   cache_block_t() {
-    //设置cache block的tag位为0。
+    //初始化设置cache block的tag位为0。
     //  Memory  |————————|——————————|————————|
     //  Address    Tag       Set    Byte Offset
     m_tag = 0;
+    //block的起始地址。
     m_block_addr = 0;
   }
-  
+  //已经选定m_lines[idx]作为逐出并reserve新访问的cache line，这里执行对新访问的reserve操作。
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         unsigned time,
                         mem_access_sector_mask_t sector_mask) = 0;
@@ -197,6 +203,8 @@ struct cache_block_t {
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
   virtual mem_access_sector_mask_t get_dirty_sector_mask() = 0;
   virtual unsigned long long get_last_access_time() = 0;
+  //设置当前cache line的最末次访问时间，包括sector的访问时间和line的访问时间。只有
+  //访问状态为Hit时才会设置。
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
   virtual unsigned long long get_alloc_time() = 0;
@@ -349,8 +357,10 @@ struct sector_cache_block : public cache_block_t {
 
   void init() {
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+      //第i个sector被分配给新访问reserve的时间。
       m_sector_alloc_time[i] = 0;
       m_sector_fill_time[i] = 0;
+      //第i个sector被访问的时间，被访问包括第一次分配时的时间，也包括后续HIT该sector的时间。
       m_last_sector_access_time[i] = 0;
       m_status[i] = INVALID;
       m_ignore_on_fill_status[i] = false;
@@ -363,12 +373,14 @@ struct sector_cache_block : public cache_block_t {
     m_line_fill_time = 0;
     m_dirty_byte_mask.reset();
   }
-
+  
+  //已经选定m_lines[idx]作为逐出并reserve新访问的cache line，这里执行对新访问的reserve操作。
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         unsigned time, mem_access_sector_mask_t sector_mask) {
     allocate_line(tag, block_addr, time, sector_mask);
   }
 
+  //已经选定m_lines[idx]作为逐出并reserve新访问的cache line，这里执行对新访问的reserve操作。
   void allocate_line(new_addr_type tag, new_addr_type block_addr, unsigned time,
                      mem_access_sector_mask_t sector_mask) {
     // allocate a new line
@@ -381,8 +393,10 @@ struct sector_cache_block : public cache_block_t {
 
     // set sector stats
     m_sector_alloc_time[sidx] = time;
+    //第sidx个sector被访问的时间，这里被访问是第一次分配时的时间。
     m_last_sector_access_time[sidx] = time;
     m_sector_fill_time[sidx] = 0;
+    //设置第sidx个sector为RESERVED。
     m_status[sidx] = RESERVED;
     m_ignore_on_fill_status[sidx] = false;
     m_set_modified_on_fill[sidx] = false;
@@ -401,7 +415,9 @@ struct sector_cache_block : public cache_block_t {
     unsigned sidx = get_sector_index(sector_mask);
 
     // set sector stats
+    //第sidx个sector被分配给新访问reserve的时间。
     m_sector_alloc_time[sidx] = time;
+    //第sidx个sector被访问的时间，被访问包括第一次分配时的时间，也包括后续HIT该sector的时间。
     m_last_sector_access_time[sidx] = time;
     m_sector_fill_time[sidx] = 0;
     if (m_status[sidx] == MODIFIED)  // this should be the case only for
@@ -496,10 +512,12 @@ struct sector_cache_block : public cache_block_t {
     return m_line_last_access_time;
   }
 
+  //设置当前cache line的最末次访问时间，包括sector的访问时间和line的访问时间。只有
+  //访问状态为Hit时才会设置。
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
     unsigned sidx = get_sector_index(sector_mask);
-
+    //第sidx个sector被访问的时间，这里被访问是HIT该sector的时间。
     m_last_sector_access_time[sidx] = time;
     m_line_last_access_time = time;
   }
@@ -551,12 +569,15 @@ struct sector_cache_block : public cache_block_t {
   }
 
  private:
+  //4个sector被分配给新访问reserve的时间。
   unsigned m_sector_alloc_time[SECTOR_CHUNCK_SIZE];
+  //4个sector被访问的时间，被访问包括第一次分配时的时间，也包括后续HIT该sector的时间。
   unsigned m_last_sector_access_time[SECTOR_CHUNCK_SIZE];
   unsigned m_sector_fill_time[SECTOR_CHUNCK_SIZE];
   unsigned m_line_alloc_time;
   unsigned m_line_last_access_time;
   unsigned m_line_fill_time;
+  //每个sector的状态，包括INVALID = 0, RESERVED, VALID, MODIFIED。
   cache_block_state m_status[SECTOR_CHUNCK_SIZE];
   bool m_ignore_on_fill_status[SECTOR_CHUNCK_SIZE];
   bool m_set_modified_on_fill[SECTOR_CHUNCK_SIZE];
@@ -615,6 +636,9 @@ enum cache_type { NORMAL = 0, SECTOR };
 #define MAX_WARP_PER_SHADER 64
 #define MAX_WARP_PER_SHADER 64
 
+/*
+Cache配置类。
+*/
 class cache_config {
  public:
   cache_config() {
@@ -677,6 +701,7 @@ class cache_config {
       default:
         exit_parse_error();
     }
+    //在V100配置中，L1 cache为'T'，L2 cache为'B'。
     switch (wp) {
       case 'R':
         m_write_policy = READ_ONLY;
@@ -889,6 +914,8 @@ class cache_config {
     //这里实际返回的是除offset位以外的所有位，即set index也作为tag的一部分了。
     return addr & ~(new_addr_type)(m_line_sz - 1);
   }
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr(new_addr_type addr) const {
     return addr & ~(new_addr_type)(m_line_sz - 1);
   }
@@ -900,10 +927,12 @@ class cache_config {
     // set new assoc. L1 cache dynamically resized in Volta
     m_assoc = n;
   }
+  //返回cache有多少个set。
   unsigned get_nset() const {
     assert(m_valid);
     return m_nset;
   }
+  //以KB为单位，返回整个cache的大小。
   unsigned get_total_size_inKB() const {
     assert(m_valid);
     return (m_assoc * m_nset * m_line_sz) / 1024;
@@ -932,10 +961,15 @@ class cache_config {
 
   bool m_valid;
   bool m_disabled;
+  //cache line的大小，以字节为单位。
   unsigned m_line_sz;
+  //m_line_sz_log2 = log2(m_line_sz)。
   unsigned m_line_sz_log2;
+  //cache有多少个set。
   unsigned m_nset;
+  //m_nset_log2 = log2(m_nset)。
   unsigned m_nset_log2;
+  //cache有多少way。
   unsigned m_assoc;
   unsigned m_atom_sz;
   unsigned m_sector_sz_log2;
@@ -1031,17 +1065,51 @@ class tag_array {
   ~tag_array();
   //判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/
   //MISS/RESERVATION_FAIL等状态。
+  //对一个cache进行数据访问的时候，调用data_cache::access()函数：
+  //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+  //- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  //  回的cache访问状态，执行相应的操作。
+  //  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+  //    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+  //    函数来实现LRU状态的更新。
   enum cache_request_status probe(new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   bool probe_mode = false) const;
   //判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/
   //MISS/RESERVATION_FAIL等状态。
+  //对一个cache进行数据访问的时候，调用data_cache::access()函数：
+  //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+  //- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  //  回的cache访问状态，执行相应的操作。
+  //  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+  //    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+  //    函数来实现LRU状态的更新。
   enum cache_request_status probe(new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   bool probe_mode = false,
                                   mem_fetch *mf = NULL) const;
+  //更新LRU状态。Least Recently Used。
+  //对一个cache进行数据访问的时候，调用data_cache::access()函数：
+  //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+  //- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  //  回的cache访问状态，执行相应的操作。
+  //  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+  //    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+  //    函数来实现LRU状态的更新。
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, mem_fetch *mf);
+  //更新LRU状态。Least Recently Used。
+  //对一个cache进行数据访问的时候，调用data_cache::access()函数：
+  //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+  //- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  //  回的cache访问状态，执行相应的操作。
+  //  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+  //    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+  //    函数来实现LRU状态的更新。
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, bool &wb,
                                    evicted_block_info &evicted, mem_fetch *mf);
@@ -1067,6 +1135,7 @@ class tag_array {
   void update_cache_parameters(cache_config &config);
   void add_pending_line(mem_fetch *mf);
   void remove_pending_line(mem_fetch *mf);
+  //当一个cache block被MODIFIED时，将其标记为DIRTY，则dirty的数量就应该加1。
   void inc_dirty() { m_dirty++; }
 
  protected:
@@ -1415,6 +1484,8 @@ class baseline_cache : public cache_t {
             mem_fetch_interface *memport, enum mem_fetch_status status) {
     m_name = name;
     assert(config.m_mshr_type == ASSOC || config.m_mshr_type == SECTOR_ASSOC);
+    //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是通过
+    //这个接口来发送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
     m_memport = memport;
     m_miss_queue_status = status;
   }
@@ -1528,8 +1599,12 @@ class baseline_cache : public cache_t {
   //MSHR条目和缓存行。缓存状态处理程序可能会在资源不可用时失败，例如没有可用的MSHR条目、该集中的所
   //有缓存块都已保留但尚未填充、未命中队列已满等。
   mshr_table m_mshrs;
+  //在baseline_cache::cycle()中，会将m_miss_queue队首的数据包mf传递给下一层缓存。当遇到miss的请求
+  //需要访问下一级存储时，会把miss的请求放到m_miss_queue中。
   std::list<mem_fetch *> m_miss_queue;
   enum mem_fetch_status m_miss_queue_status;
+  //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是通过这个接口来发
+  //送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
   mem_fetch_interface *m_memport;
 
   struct extra_mf_fields {
@@ -1564,6 +1639,12 @@ class baseline_cache : public cache_t {
 
   // Checks whether this request can be handled on this cycle. num_miss equals
   // max # of misses to be handled on this cycle
+  //检查是否一个miss请求能够在当前时钟周期内被处理，m_miss_queue_size在V100的L1 cache
+  //中配置为16，在L2 cache中配置为32，当一个请求的大小大到m_miss_queue放不下时，它就在
+  //当前时钟周期内无法处理完毕。这里所说的能否在本时钟周期内处理完毕，仅是指能否将此miss
+  //请求放入m_miss_queue。在baseline_cache::cycle()中，会将m_miss_queue队首的数据包
+  //mf传递给下一层缓存。至于能否将这个miss请求在本时钟周期内发送至下一层缓存，就不是这里
+  //需要考虑的。
   bool miss_queue_full(unsigned num_miss) {
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
@@ -1672,6 +1753,7 @@ class data_cache : public baseline_cache {
 
     // Set write hit function
     switch (m_config.m_write_policy) {
+      //在V100配置中，L1 cache为write-through，L2 cache为write-back。
       // READ_ONLY is now a separate cache class, config is deprecated
       case READ_ONLY:
         assert(0 && "Error: Writable Data_cache set as READ_ONLY\n");
@@ -1694,6 +1776,7 @@ class data_cache : public baseline_cache {
     }
 
     // Set write miss function
+    //V100中配置为LAZY_FETCH_ON_READ。
     switch (m_config.m_write_alloc_policy) {
       case NO_WRITE_ALLOCATE:
         m_wr_miss = &data_cache::wr_miss_no_wa;
@@ -1920,6 +2003,8 @@ class tex_cache : public cache_t {
            config.m_mshr_type == SECTOR_TEX_FIFO);
     assert(config.m_write_policy == READ_ONLY);
     assert(config.m_alloc_policy == ON_MISS);
+    //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是通过
+    //这个接口来发送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
     m_memport = memport;
     m_cache = new data_block[config.get_num_lines()];
     m_request_queue_status = request_status;
@@ -2070,7 +2155,8 @@ class tex_cache : public cache_t {
   fifo<rob_entry> m_rob;
   data_block *m_cache;
   fifo<mem_fetch *> m_result_fifo;  // next completed texture fetch
-  //mem_fetch_interface是对mem访存的接口。
+  //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是通过
+  //这个接口来发送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
   mem_fetch_interface *m_memport;
   enum mem_fetch_status m_request_queue_status;
   enum mem_fetch_status m_rob_status;
