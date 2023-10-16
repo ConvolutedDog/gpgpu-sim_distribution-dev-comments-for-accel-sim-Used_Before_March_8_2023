@@ -66,14 +66,14 @@
 #define PRINT_WRITE_BACK_PROCESS 0
 #define PRINT_EXECUTE_PROCESS 0
 
-#define PRINT_START_CYCLE 1
-#define PRINT_FETCH_STALL 1 // For V100 has no FETCH stall
-#define PRINT_DECODE_STALL 1 // DECODE has no stall
-#define PRINT_ISSUE_STALL 1
-#define PRINT_EXECUTE_STALL 1
-#define PRINT_READ_OPERANDS_STALL 1
-#define PRINT_WRITE_BACK_STALL 1
-#define PRINT_END_CYCLE 1
+#define PRINT_START_CYCLE 0
+#define PRINT_FETCH_STALL 0 // For V100 has no FETCH stall
+#define PRINT_DECODE_STALL 0 // DECODE has no stall
+#define PRINT_ISSUE_STALL 0
+#define PRINT_EXECUTE_STALL 0
+#define PRINT_READ_OPERANDS_STALL 0
+#define PRINT_WRITE_BACK_STALL 0
+#define PRINT_END_CYCLE 0
 
 /*
 source ./gpu-simulator/setup_environment.sh && make -j -C ./gpu-simulator/ && ./gpu-simulator/bin/release/accel-sim.out -trace ./hw_run/traces/device-1/11.0/wmma_tensorcore/NO_ARGS/traces/kernelslist.g -config ./gpu-simulator/gpgpu-sim/configs/tested-cfgs/SM75_RTX2080_Ti/gpgpusim.config -config ./gpu-simulator/configs/tested-cfgs/SM75_RTX2080_Ti/trace.config > tmp.txt
