@@ -1536,20 +1536,40 @@ void data_cache::send_write_request(mem_fetch *mf, cache_event request,
   mf->set_status(m_miss_queue_status, time);
 }
 
+/*
+更新一个cache block的状态为可读。如果所有的byte mask位全都设置为dirty了，则将该sector可
+设置为可读，因为当前的sector已经是全部更新为最新值了，是可读的。这个函数对所有的数据请求mf
+的所有访问的sector进行遍历，如果mf所访问的所有的byte mask位全都设置为dirty了，则将该cache
+block设置为可读。
+*/
 void data_cache::update_m_readable(mem_fetch *mf, unsigned cache_index) {
+  //这里传入的参数是cache block的index。
+  // For example, 4 sets, 6 ways:
+  // |  0  |  1  |  2  |  3  |  4  |  5  |  // set_index 0
+  // |  6  |  7  |  8  |  9  |  10 |  11 |  // set_index 1
+  // |  12 |  13 |  14 |  15 |  16 |  17 |  // set_index 2
+  // |  18 |  19 |  20 |  21 |  22 |  23 |  // set_index 3
+  //                |--------> index => cache_block_t *line
   cache_block_t *block = m_tag_array->get_block(cache_index);
+  //对当前cache block的4个sector进行遍历。
   for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
+    //第i个sector被数据请求mf访问。
     if (mf->get_access_sector_mask().test(i)) {
+      //all_set是指所有的byte mask位都被设置成了dirty了。
       bool all_set = true;
+      //这里k是隶属于第i个sector的byte的编号。
       for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
         // If any bit in the byte mask (within the sector) is not set, 
         // the sector is unreadble
+        //如果第i个sector中有任意一个byte的dirty mask位没有被设置，则all_set就是false。
         if (!block->get_dirty_byte_mask().test(k)) {
           all_set = false;
           break;
         }
       }
       if (all_set)
+        //如果所有的byte mask位全都设置为dirty了，则将该sector可设置为可读，因为当前的
+        //sector已经是全部更新为最新值了，是可读的。
         block->set_m_readable(true, mf->get_access_sector_mask());
     }
   }
@@ -1558,15 +1578,22 @@ void data_cache::update_m_readable(mem_fetch *mf, unsigned cache_index) {
 /****** Write-hit functions (Set by config file) ******/
 
 // Write-back hit: Mark block as modified
+/*
+若Write Hit时采取write-back策略，则需要将数据不单单写入cache，还需要直接将数据写入下一
+级存储。
+*/
 cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
                                            unsigned cache_index, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
-  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
-  //有位。
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的
+  //所有位。
+  //这里write-back策略不需要直接将数据写入下一级存储，因此不需要调用miss_queue_full()
+  //以及send_write_request()函数来发送请求到下一级存储。
   new_addr_type block_addr = m_config.block_addr(addr);
+  //LRU状态的更新。
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
@@ -1574,6 +1601,10 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
   }
   block->set_status(MODIFIED, mf->get_access_sector_mask());
   block->set_byte_mask(mf);
+  //更新一个cache block的状态为可读。如果所有的byte mask位全都设置为dirty了，则将该sector
+  //可设置为可读，因为当前的sector已经是全部更新为最新值了，是可读的。这个函数对所有的数据请
+  //求mf的所有访问的sector进行遍历，如果mf所访问的所有的byte mask位全都设置为dirty了，则将
+  //该cache block设置为可读。
   update_m_readable(mf,cache_index);
 
   return HIT;
@@ -1602,12 +1633,15 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   //不下时，它就在当前时钟周期内无法处理，发生RESERVATION_FAIL。
   if (miss_queue_full(0)) {
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
+    //如果miss_queue满了，但由于write-through策略要求数据应该直接写入下一级存储，因此这
+    //里返回RESERVATION_FAIL，表示当前时钟周期内无法处理该请求。
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
+  //LRU状态的更新。
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
@@ -1615,9 +1649,14 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   }
   block->set_status(MODIFIED, mf->get_access_sector_mask());
   block->set_byte_mask(mf);
+  //更新一个cache block的状态为可读。如果所有的byte mask位全都设置为dirty了，则将该sector
+  //可设置为可读，因为当前的sector已经是全部更新为最新值了，是可读的。这个函数对所有的数据请
+  //求mf的所有访问的sector进行遍历，如果mf所访问的所有的byte mask位全都设置为dirty了，则将
+  //该cache block设置为可读。
   update_m_readable(mf,cache_index);
 
   // generate a write-through
+  //write-through策略将数据写入下一级存储。
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
 
   return HIT;
@@ -1625,6 +1664,9 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
 
 // Write-evict hit: Send request to lower level memory and invalidate
 // corresponding block
+/*
+V100中暂时没有配置该策略，暂时不管。
+*/
 cache_request_status data_cache::wr_hit_we(new_addr_type addr,
                                            unsigned cache_index, mem_fetch *mf,
                                            unsigned time,
@@ -1646,6 +1688,9 @@ cache_request_status data_cache::wr_hit_we(new_addr_type addr,
 }
 
 // Global write-evict, local write-back: Useful for private caches
+/*
+V100中暂时没有配置该策略，暂时不管。
+*/
 enum cache_request_status data_cache::wr_hit_global_we_local_wb(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
@@ -1663,6 +1708,9 @@ enum cache_request_status data_cache::wr_hit_global_we_local_wb(
 
 // Write-allocate miss: Send write request to lower level memory
 // and send a read request for the same block
+/*
+V100中暂时没有配置该策略，暂时不管。
+*/
 enum cache_request_status data_cache::wr_miss_wa_naive(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
@@ -1745,6 +1793,9 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
   return RESERVATION_FAIL;
 }
 
+/*
+V100中暂时没有配置该策略，暂时不管。
+*/
 enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
@@ -1776,6 +1827,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     }
     block->set_status(MODIFIED, mf->get_access_sector_mask());
     block->set_byte_mask(mf);
+    //在当前版本的GPGPU-Sim中，set_ignore_on_fill暂时用不到。
     if (status == HIT_RESERVED)
       block->set_ignore_on_fill(true, mf->get_access_sector_mask());
 
@@ -1879,9 +1931,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
 
 /*
 FETCH_ON_READ policy。 m_wr_miss = &data_cache::wr_miss_wa_lazy_fetch_on_read。
- - data_cache::access()
-   - m_wr_miss()
-     - wr_miss_wa_lazy_fetch_on_read()
+需要参考 https://arxiv.org/pdf/1810.07269.pdf 论文对Volta架构访存行为的解释。
 */
 enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
@@ -1936,30 +1986,67 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   bool wb = false;
   evicted_block_info evicted;
 
+  //更新LRU状态。Least Recently Used。
+  //对一个cache进行数据访问的时候，调用data_cache::access()函数：
+  //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+  //- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  //  回的cache访问状态，执行相应的操作。
+  //  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+  //    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+  //    函数来实现LRU状态的更新。
   cache_request_status m_status =
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+
+  // Theoretically, the passing parameter status should be the same as the m_status, 
+  // if the assertion fails here, go to function `wr_miss_wa_lazy_fetch_on_read` to 
+  // remove this assertion. yangjianchao16 add
+  assert((m_status == status));
   assert(m_status != HIT);
+  //cache_index是cache block的index。
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
     m_tag_array->inc_dirty();
   }
   block->set_status(MODIFIED, mf->get_access_sector_mask());
   block->set_byte_mask(mf);
+  //如果Cache block[mask]状态是RESERVED，说明有其他的线程正在读取这个Cache block。挂起的命
+  //中访问已命中处于RESERVED状态的缓存行，这意味着同一行上已存在由先前缓存未命中发送的flying
+  //内存请求。
   if (m_status == HIT_RESERVED) {
+    //在当前版本的GPGPU-Sim中，set_ignore_on_fill暂时用不到。
     block->set_ignore_on_fill(true, mf->get_access_sector_mask());
+    //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
+    //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
     block->set_modified_on_fill(true, mf->get_access_sector_mask());
+    //在FETCH_ON_READ policy: https://arxiv.org/pdf/1810.07269.pdf 中提到，访问cache发生
+    //miss时：
+    // In the write-validate policy, no read fetch is required, instead each sector has 
+    // a bit-wise write-mask. When a write to a single byte is received, it writes the 
+    // byte to the sector, sets the corresponding write bit and sets the sector as valid 
+    // and modified. When a modified cache line is evicted, the cache line is written 
+    // back to the memory along with the write mask.
+    //而在FETCH_ON_READ中，需要设置sector的byte mask。这里就是指设置这个byte mask的标志。
     block->set_byte_mask_on_fill(true);
   }
 
+  //m_config.get_atom_sz()为SECTOR_SIZE=4，即mf访问的是一整个sector=4字节。
   if (mf->get_access_byte_mask().count() == m_config.get_atom_sz()) {
+    //由于mf访问的是整个sector，因此整个sector都是dirty的，设置访问的sector可读。
     block->set_m_readable(true, mf->get_access_sector_mask());
   } else {
+    //由于mf访问的是部分sector，因此只有mf访问的那部分sector是dirty的，设置访问的sector不可读。
     block->set_m_readable(false, mf->get_access_sector_mask());
     if (m_status == HIT_RESERVED)
       block->set_readable_on_fill(true, mf->get_access_sector_mask());
   }
+  //更新一个cache block的状态为可读。如果所有的byte mask位全都设置为dirty了，则将该sector可
+  //设置为可读，因为当前的sector已经是全部更新为最新值了，是可读的。这个函数对所有的数据请求mf
+  //的所有访问的sector进行遍历，如果mf所访问的所有的byte mask位全都设置为dirty了，则将该cache
+  //block设置为可读。
   update_m_readable(mf,cache_index);
 
+  //m_status的状态可以为HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL，
   if (m_status != RESERVATION_FAIL) {
     // If evicted block is modified and not a write-through
     // (already modified lower level)
@@ -1982,6 +2069,9 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 }
 
 // No write-allocate miss: Simply send write request to lower level memory
+/*
+V100中暂时没有配置该策略，暂时不管。
+*/
 enum cache_request_status data_cache::wr_miss_no_wa(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
