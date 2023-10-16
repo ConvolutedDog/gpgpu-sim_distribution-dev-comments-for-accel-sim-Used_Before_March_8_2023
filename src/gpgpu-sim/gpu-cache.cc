@@ -262,6 +262,14 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
 /*
 判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS
 /RESERVATION_FAIL等状态。
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
 */
 enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            mem_fetch *mf, bool is_write,
@@ -273,6 +281,14 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
 /*
 判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS
 /RESERVATION_FAIL等状态。
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
 */
 enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
@@ -429,6 +445,18 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   return MISS;
 }
 
+
+/*
+更新LRU状态。Least Recently Used。
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
+*/
 enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
                                             unsigned &idx, mem_fetch *mf) {
   bool wb = false;
@@ -438,6 +466,17 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   return result;
 }
 
+/*
+更新LRU状态。Least Recently Used。
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
+*/
 enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
                                             unsigned &idx, bool &wb,
                                             evicted_block_info &evicted,
@@ -445,35 +484,47 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
+  //由于当前函数没有把之前probe函数的cache访问状态传参进来，这里这个probe单纯的重新获取这个状态。
   enum cache_request_status status = probe(addr, idx, mf, mf->is_write());
   switch (status) {
+    //新访问是HIT_RESERVED的话，不执行动作。
     case HIT_RESERVED:
       m_pending_hit++;
+    //新访问是HIT的话，设置第idx号cache line以及mask对应的sector的最末此访问时间为当前拍。
     case HIT:
       m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
       break;
+    //新访问是MISS的话，说明已经选定m_lines[idx]作为逐出并reserve新访问的cache line。
     case MISS:
       m_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
+      //L1 cache与L2 cache均为allocate on miss。
       if (m_config.m_alloc_policy == ON_MISS) {
         if (m_lines[idx]->is_modified_line()) {
+          //m_lines[idx]作为逐出并reserve新访问的cache line，如果它的某个sector已经被
+          //MODIFIED，则需要执行写回操作，设置写回的标志为wb，设置逐出cache line的信息。
           wb = true;
           evicted.set_info(m_lines[idx]->m_block_addr,
                            m_lines[idx]->get_modified_size(),
                            m_lines[idx]->get_dirty_byte_mask(),
                            m_lines[idx]->get_dirty_sector_mask());
+          //由于执行写回操作，MODIFIED造成的m_dirty数量应该减1。
           m_dirty--;
         }
+        //执行对新访问的reserve操作。
         m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr),
                                time, mf->get_access_sector_mask());
       }
       break;
+    //Cache block有效，但是其中的byte mask=Cache block[mask]状态无效，说明sector缺失。
     case SECTOR_MISS:
       assert(m_config.m_cache_type == SECTOR);
       m_sector_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
+      //L1 cache与L2 cache均为allocate on miss。
       if (m_config.m_alloc_policy == ON_MISS) {
         bool before = m_lines[idx]->is_modified_line();
+        //设置m_lines[idx]为新访问分配一个sector。
         ((sector_cache_block *)m_lines[idx])
             ->allocate_sector(time, mf->get_access_sector_mask());
         if (before && !m_lines[idx]->is_modified_line()) {
@@ -481,6 +532,11 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
         }
       }
       break;
+    //probe函数中：
+    //all_reserved被初始化为true，是指所有cache line都没有能够逐出来为新访问提供RESERVE
+    //的空间，这里一旦满足函数两个if条件，说明cache line可以被逐出来提供空间供RESERVE新访
+    //问，这里all_reserved置为false。而一旦最终all_reserved仍旧保持true的话，就说明cache
+    //line不可被逐出，发生RESERVATION_FAIL。因此这里不执行任何操作。
     case RESERVATION_FAIL:
       m_res_fail++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
@@ -1276,6 +1332,8 @@ void baseline_cache::cycle() {
       /*************************************************************************************** tmp end   */
       m_miss_queue.pop_front();
       //mem_fetch_interface是对mem访存的接口。
+      //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是通过
+      //这个接口来发送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
       m_memport->push(mf);
     }
   }
@@ -1303,6 +1361,8 @@ void baseline_cache::cycle(unsigned long long cycle) {
       /*************************************************************************************** tmp end   */
       m_miss_queue.pop_front();
       //mem_fetch_interface是对mem访存的接口。
+      //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是通过
+      //这个接口来发送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
       m_memport->push(mf);
     }
     /*************************************************************************************** tmp start */
@@ -1451,6 +1511,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     mf->set_data_size(m_config.get_atom_sz());
     mf->set_addr(mshr_addr);
     //mf为miss的请求，加入miss_queue，MISS请求队列。
+    //在baseline_cache::cycle()中，会将m_miss_queue队首的数据包mf传递给下一层缓存。
     m_miss_queue.push_back(mf);
     mf->set_status(m_miss_queue_status, time);
     if (!wa) events.push_back(cache_event(READ_REQUEST_SENT));
@@ -1465,10 +1526,12 @@ void baseline_cache::send_read_request(new_addr_type addr,
 }
 
 // Sends write request to lower level memory (write or writeback)
+//将数据写请求一同发送至下一级存储。
 void data_cache::send_write_request(mem_fetch *mf, cache_event request,
                                     unsigned time,
                                     std::list<cache_event> &events) {
   events.push_back(request);
+  //在baseline_cache::cycle()中，会将m_miss_queue队首的数据包mf传递给下一层缓存。
   m_miss_queue.push_back(mf);
   mf->set_status(m_miss_queue_status, time);
 }
@@ -1500,6 +1563,9 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
                                            unsigned time,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -1514,16 +1580,33 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
 }
 
 // Write-through hit: Directly send request to lower level memory
+/*
+若Write Hit时采取write-through策略，则需要将数据不单单写入cache，还需要直接将数据写入下
+一级存储。
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
+*/
 cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
                                            unsigned cache_index, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
+  //miss_queue_full检查是否一个miss请求能够在当前时钟周期内被处理，m_miss_queue_size在
+  //V100的L1 cache中配置为16，在L2 cache中配置为32，当一个请求的大小大到m_miss_queue放
+  //不下时，它就在当前时钟周期内无法处理，发生RESERVATION_FAIL。
   if (miss_queue_full(0)) {
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
-
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -1583,6 +1666,9 @@ enum cache_request_status data_cache::wr_hit_global_we_local_wb(
 enum cache_request_status data_cache::wr_miss_wa_naive(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
 
@@ -1662,6 +1748,9 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
 enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
 
@@ -1750,6 +1839,9 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         mf->get_tpc(), mf->get_mem_config(),
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, NULL, mf);
 
+    //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+    //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+    //有位。
     new_addr_type block_addr = m_config.block_addr(addr);
     bool do_miss = false;
     bool wb = false;
@@ -1785,21 +1877,59 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
   }
 }
 
+/*
+FETCH_ON_READ policy。 m_wr_miss = &data_cache::wr_miss_wa_lazy_fetch_on_read。
+ - data_cache::access()
+   - m_wr_miss()
+     - wr_miss_wa_lazy_fetch_on_read()
+*/
 enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
 
   // if the request writes to the whole cache line/sector, then, write and set
   // cache line Modified. and no need to send read request to memory or reserve
   // mshr
 
+  // FETCH_ON_READ policy: https://arxiv.org/pdf/1810.07269.pdf
+  // In literature, there are two different write allocation policies [32], fetch-
+  // on-write and write-validate. In fetch-on-write, when we write to a single byte
+  // of a sector, the L2 fetches the whole sector then merges the written portion 
+  // to the sector and sets the sector as modified. In the write-validate policy, 
+  // no read fetch is required, instead each sector has a bit-wise write-mask. When 
+  // a write to a single byte is received, it writes the byte to the sector, sets 
+  // the corresponding write bit and sets the sector as valid and modified. When a 
+  // modified cache line is evicted, the cache line is written back to the memory 
+  // along with the write mask. It is important to note that, in a write-validate 
+  // policy, it assumes the read and write granularity can be in terms of bytes in 
+  // order to exploit the benefits of the write-mask. In fact, based on our micro-
+  // benchmark shown in Figure 5, we have observed that the L2 cache applies some-
+  // thing similar to write-validate. However, all the reads received by L2 caches 
+  // from the coalescer are 32-byte sectored accesses. Thus, the read access granu-
+  // larity (32 bytes) is different from the write access granularity (one byte). 
+  // To handle this, the L2 cache applies a different write allocation policy, 
+  // which we named lazy fetch-on-read, that is a compromise between write-validate 
+  // and fetch-on-write. When a sector read request is received to a modified sector, 
+  // it first checks if the sector write-mask is complete, i.e. all the bytes have 
+  // been written to and the line is fully readable. If so, it reads the sector, 
+  // otherwise, similar to fetch-on-write, it generates a read request for this 
+  // sector and merges it with the modified bytes.
+
+  //miss_queue_full检查是否一个miss请求能够在当前时钟周期内被处理，m_miss_queue_size在
+  //V100的L1 cache中配置为16，在L2 cache中配置为32，当一个请求的大小大到m_miss_queue放
+  //不下时，它就在当前时钟周期内无法处理完毕，发生RESERVATION_FAIL。
   if (miss_queue_full(0)) {
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
 
+  //在V100配置中，L1 cache为'T'-write through，L2 cache为'B'-write back。
   if (m_config.m_write_policy == WRITE_THROUGH) {
+    //如果是write through，则需要将数据一同写回下一层存储。
     send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
   }
 
@@ -1855,6 +1985,9 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 enum cache_request_status data_cache::wr_miss_no_wa(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
+  //miss_queue_full检查是否一个miss请求能够在当前时钟周期内被处理，m_miss_queue_size在
+  //V100的L1 cache中配置为16，在L2 cache中配置为32，当一个请求的大小大到m_miss_queue放
+  //不下时，它就在当前时钟周期内无法处理完毕，发生RESERVATION_FAIL。
   if (miss_queue_full(0)) {
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
     return RESERVATION_FAIL;  // cannot handle request this cycle
@@ -1872,23 +2005,32 @@ enum cache_request_status data_cache::wr_miss_no_wa(
 // Baseline read hit: Update LRU status of block.
 // Special case for atomic instructions -> Mark block as modified
 /*
-
+READ HIT操作。
 */
 enum cache_request_status data_cache::rd_hit_base(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);
   // Atomics treated as global read/write requests - Perform read, mark line as
   // MODIFIED
+  //原子操作从全局存储取值，计算，并写回相同地址三项事务在同一原子操作中完成，因此会修改
+  //cache的状态为MODIFIED。
   if (mf->isatomic()) {
     assert(mf->get_access_type() == GLOBAL_ACC_R);
+    //获取该原子操作的cache line，并判断其是否先前已被MODIFIED，如果先前未被MODIFIED，此
+    //次原子操作做出MODIFIED，要增加dirty数目。
     cache_block_t *block = m_tag_array->get_block(cache_index);
     if (!block->is_modified_line()) {
       m_tag_array->inc_dirty();
     }
+    //设置cache line的状态为MODIFIED。
     block->set_status(MODIFIED,
-                      mf->get_access_sector_mask());  // mark line as
+                      mf->get_access_sector_mask());  // mark line as MODIFIED
+    //设置dirty_byte_mask。
     block->set_byte_mask(mf);
   }
   return HIT;
@@ -1908,6 +2050,9 @@ enum cache_request_status data_cache::rd_miss_base(
     return RESERVATION_FAIL;
   }
 
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   bool do_miss = false;
   bool wb = false;
@@ -1943,6 +2088,9 @@ enum cache_request_status read_only_cache::access(
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   assert(m_config.m_write_policy == READ_ONLY);
   assert(!mf->get_is_write());
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status status =
@@ -1979,6 +2127,18 @@ enum cache_request_status read_only_cache::access(
 //! A general function that takes the result of a tag_array probe
 //  and performs the correspding functions based on the cache configuration
 //  The access fucntion calls this function
+/*
+一个通用函数，它获取tag_array探测的结果并根据缓存配置执行相应的功能。
+access函数调用它：
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
+*/
 enum cache_request_status data_cache::process_tag_probe(
     bool wr, enum cache_request_status probe_status, new_addr_type addr,
     unsigned cache_index, mem_fetch *mf, unsigned time,
@@ -2028,6 +2188,16 @@ enum cache_request_status data_cache::process_tag_probe(
 /*
 L1 和 L2 目前使用相同的访问功能。两个缓存之间的区分是通过配置缓存策略来完成的。
 L1 和 L2 都覆盖此函数，以提供在包含此类操作时执行特定于每个缓存的操作的方法。
+对cache进行数据访问。
+
+对一个cache进行数据访问的时候，调用data_cache::access()函数：
+- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
+  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
+- 然后调用process_tag_probe()函数，根据cache的配置以及上面m_tag_array->probe()函数返
+  回的cache访问状态，执行相应的操作。
+  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
+    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
+    函数来实现LRU状态的更新。
 */
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned time,
@@ -2037,8 +2207,13 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
+  //cache_index会返回依据tag位选中的cache line的索引。
   unsigned cache_index = (unsigned)-1;
+  //判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/
+  //MISS/RESERVATION_FAIL等状态。
   enum cache_request_status probe_status =
       m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), true);
   enum cache_request_status access_status =
@@ -2088,6 +2263,9 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
 
   // at this point, we will accept the request : access tags and immediately
   // allocate line
+  //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
+  //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
+  //有位。
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status status =
@@ -2124,6 +2302,8 @@ void tex_cache::cycle() {
     mem_fetch *mf = m_request_fifo.peek();
     if (!m_memport->full(mf->get_ctrl_size(), false)) {
       m_request_fifo.pop();
+      //mem_fetch_interface是cache对mem访存的接口，cache将miss请求发送至下一级存储就是
+      //通过这个接口来发送，即m_miss_queue中的数据包需要压入m_memport实现发送至下一级存储。
       m_memport->push(mf);
     }
   }
