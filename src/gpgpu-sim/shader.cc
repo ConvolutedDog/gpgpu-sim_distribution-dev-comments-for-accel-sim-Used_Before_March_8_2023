@@ -1272,10 +1272,10 @@ void shader_core_ctx::fetch() {
           //I-Cache中取指令，因为I-Cache的起始地址就是0xF0000000。
           address_type ppc = pc + PROGRAM_MEM_START;
           unsigned nbytes = 16;
-          //offset_in_block是PC标识的指令在I-Cache Line中的偏移。
+          //offset_in_block是PC标识的指令在I-cache block中的偏移。
           unsigned offset_in_block =
               pc & (m_config->m_L1I_config.get_line_sz() - 1);
-          //如果这个偏移+nbytes > I-Cache Line Size，就说明一行Cache存不下nbyte大小的数据，重
+          //如果这个偏移+nbytes > I-cache block Size，就说明一行Cache存不下nbyte大小的数据，重
           //新设置nbytes的值。
           if ((offset_in_block + nbytes) > m_config->m_L1I_config.get_line_sz())
             nbytes = (m_config->m_L1I_config.get_line_sz() - offset_in_block);
