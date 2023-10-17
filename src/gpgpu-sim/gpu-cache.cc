@@ -467,7 +467,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
 }
 
 /*
-更新LRU状态。Least Recently Used。
+更新LRU状态。Least Recently Used。返回是否需要写回wb以及逐出的cache line的信息evicted。
 对一个cache进行数据访问的时候，调用data_cache::access()函数：
 - 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
   为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
@@ -759,11 +759,11 @@ bool was_writeallocate_sent(const std::list<cache_event> &events) {
 
 /*
 Checks if there is a pending request to the lower memory level already.
-检查是否已存在对较低内存级别的挂起请求。
+检查是否已存在对较低内存级别的挂起请求。这里实际上是MSHR查找是否已经有block_addr的请求被合并到MSHR。
 */
 bool mshr_table::probe(new_addr_type block_addr) const {
   //MSHR表中的数据为std::unordered_map，是<new_addr_type, mshr_entry>的无序map。地址block_addr
-  //去查找他是否在表中，如果 a = m_data.end()，则说明表中没有 block_addr；反之，则存在该条目。如果
+  //去查找它是否在表中，如果 a = m_data.end()，则说明表中没有 block_addr；反之，则存在该条目。如果
   //不存在该条目，则返回false；如果存在该条目，返回true，代表存在对较低内存级别的挂起请求。
   table::const_iterator a = m_data.find(block_addr);
   return a != m_data.end();
@@ -771,7 +771,8 @@ bool mshr_table::probe(new_addr_type block_addr) const {
 
 /*
 Checks if there is space for tracking a new memory access.
-检查是否有空间处理新的内存访问。
+检查是否有空间处理新的内存访问。如果mshr_addr在MSHR中已存在条目，m_mshrs.full检查是否该条目的合并数
+量已达到最大合并数；如果mshr_addr在MSHR中不存在条目，则检查是否有空闲的MSHR条目可以将mshr_addr插入进MSHR。
 */
 bool mshr_table::full(new_addr_type block_addr) const {
   //首先查找是否MSHR表中有 block_addr 地址的条目。
@@ -1463,6 +1464,9 @@ void baseline_cache::display_state(FILE *fp) const {
 }
 
 // Read miss handler without writeback
+/*
+READ MISS处理函数，检查MSHR是否命中或者MSHR是否可用，依此判断是否需要向下一级存储发送读请求。
+*/
 void baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
@@ -1476,6 +1480,9 @@ void baseline_cache::send_read_request(new_addr_type addr,
 }
 
 // Read miss handler. Check MSHR hit or MSHR available
+/*
+READ MISS处理函数，检查MSHR是否命中或者MSHR是否可用，依此判断是否需要向下一级存储发送读请求。
+*/
 void baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
@@ -1483,45 +1490,71 @@ void baseline_cache::send_read_request(new_addr_type addr,
                                        evicted_block_info &evicted,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
-  
+  //返回mshr的地址，该地址即为地址addr的tag位+set index位+sector offset位。即除single sector 
+  //byte offset位以外的所有位。
+  //                   sector off    off in-sector
+  //                   |-------------|-----------|
+  //                    \                       /
+  //                     \                     /
+  //|-------|-------------|-------------------|
+  //   tag     set_index     offset in-line
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
+  //这里实际上是MSHR查找是否已经有block_addr的请求被合并到MSHR。如果已经被挂起则mshr_hit=true。
   bool mshr_hit = m_mshrs.probe(mshr_addr);
+  //如果mshr_addr在MSHR中已存在条目，m_mshrs.full检查是否该条目的合并数量已达到最大合并数；如果
+  //mshr_addr在MSHR中不存在条目，则检查是否有空闲的MSHR条目可以将mshr_addr插入进MSHR。
   bool mshr_avail = !m_mshrs.full(mshr_addr);
   if (mshr_hit && mshr_avail) {
+    //如果MSHR命中，且mshr_addr对应条目的合并数量没有达到最大合并数，则将数据请求mf加入到MSHR中。
     if (read_only)
       m_tag_array->access(block_addr, time, cache_index, mf);
     else
+      //更新LRU状态。Least Recently Used。
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
+    //将mshr_addr地址的数据请求mf加入到MSHR中。因为命中MSHR，说明前面已经有对该数据的请求发送到
+    //下一级缓存了，因此这里只需要等待前面的请求返回即可。
     m_mshrs.add(mshr_addr, mf);
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT);
+    //代表要将某个cache block逐出并接收mf从下一级存储返回的数据。
     do_miss = true;
 
   } else if (!mshr_hit && mshr_avail &&
              (m_miss_queue.size() < m_config.m_miss_queue_size)) {
+    //如果MSHR未命中，但mshr_addr有空闲的MSHR条目可以将mshr_addr插入进MSHR，则将数据请求mf插入
+    //到MSHR中。
+    //对于L1 cache和L2 cache，read_only为false，对于read_only_cache，read_only为true。
     if (read_only)
       m_tag_array->access(block_addr, time, cache_index, mf);
     else
+      //返回是否需要写回wb以及逐出的cache line的信息evicted。因为没有命中MSHR，说明前面没有对该
+      //数据的请求发送到下一级缓存，因此这里需要把该请求发送给下一级存储。
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
     m_mshrs.add(mshr_addr, mf);
     //if (m_config.is_streaming() && m_config.m_cache_type == SECTOR) {
     //  m_tag_array->add_pending_line(mf);
     //}
+    //设置m_extra_mf_fields[mf]，意味着如果mf在m_extra_mf_fields中存在，即mf等待着下一级存储
+    //的数据回到当前缓存填充。
     m_extra_mf_fields[mf] = extra_mf_fields(
         mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
     mf->set_data_size(m_config.get_atom_sz());
     mf->set_addr(mshr_addr);
     //mf为miss的请求，加入miss_queue，MISS请求队列。
-    //在baseline_cache::cycle()中，会将m_miss_queue队首的数据包mf传递给下一层缓存。
+    //在baseline_cache::cycle()中，会将m_miss_queue队首的数据包mf传递给下一层缓存。因为没有命
+    //中MSHR，说明前面没有对该数据的请求发送到下一级缓存，因此这里需要把该请求发送给下一级存储。
     m_miss_queue.push_back(mf);
     mf->set_status(m_miss_queue_status, time);
+    //在V100配置中，wa对L1/L2/read_only cache均为false。
     if (!wa) events.push_back(cache_event(READ_REQUEST_SENT));
-
+    //代表要将某个cache block逐出并接收mf从下一级存储返回的数据。
     do_miss = true;
   } else if (mshr_hit && !mshr_avail)
+    //如果MSHR命中，但mshr_addr对应条目的合并数量达到了最大合并数。
     m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL);
   else if (!mshr_hit && !mshr_avail)
+    //如果MSHR未命中，且mshr_addr没有空闲的MSHR条目可将mshr_addr插入进MSHR。
     m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL);
   else
     assert(0);
@@ -1592,6 +1625,8 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的
   //所有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   //这里write-back策略不需要直接将数据写入下一级存储，因此不需要调用miss_queue_full()
   //以及send_write_request()函数来发送请求到下一级存储。
   new_addr_type block_addr = m_config.block_addr(addr);
@@ -1642,6 +1677,8 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   //LRU状态的更新。
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
@@ -1719,6 +1756,8 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
 
@@ -1804,6 +1843,8 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
 
@@ -1896,6 +1937,8 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
     //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
     //有位。
+    //|-------|-------------|--------------|
+    //   tag     set_index   offset in-line  
     new_addr_type block_addr = m_config.block_addr(addr);
     bool do_miss = false;
     bool wb = false;
@@ -1941,6 +1984,8 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
 
   // if the request writes to the whole cache block/sector, then, write and set
@@ -2120,6 +2165,8 @@ enum cache_request_status data_cache::rd_hit_base(
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);
   // Atomics treated as global read/write requests - Perform read, mark line as
@@ -2168,17 +2215,28 @@ enum cache_request_status data_cache::rd_miss_base(
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line        
   new_addr_type block_addr = m_config.block_addr(addr);
+  //代表要将某个cache block逐出并接收mf从下一级存储返回的数据。
   bool do_miss = false;
   bool wb = false;
   evicted_block_info evicted;
+  //READ MISS处理函数，检查MSHR是否命中或者MSHR是否可用，依此判断是否需要向下一级存储发
+  //送读请求。
   send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
                     evicted, events, false, false);
-
+  //如果send_read_request中数据请求已经被加入到MSHR，或是原先存在该条目将请求合并进去，
+  //或是原先不存在该条目将请求插入进去，那么do_miss为true，代表要将某个cache block逐出
+  //并接收mf从下一级存储返回的数据。
+  //m_lines[idx]作为逐出并reserve新访问的cache line，如果它的某个sector已经被MODIFIED，
+  //则需要执行写回操作，设置写回的标志为wb=true。
   if (do_miss) {
     // If evicted block is modified and not a write-through
     // (already modified lower level)
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
+      //发送写请求，将MODIFIED的被逐出的cache block写回到下一级存储。
+      //m_wrbk_type：L1 cache为L1_WRBK_ACC，L2 cache为L2_WRBK_ACC。
       mem_fetch *wb = m_memfetch_creator->alloc(
           evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
           evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
@@ -2206,6 +2264,8 @@ enum cache_request_status read_only_cache::access(
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status status =
@@ -2324,6 +2384,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   //cache_index会返回依据tag位选中的cache block的索引。
   unsigned cache_index = (unsigned)-1;
@@ -2381,6 +2443,8 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
   //m_config.block_addr(addr): return addr & ~(new_addr_type)(m_line_sz - 1);
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status status =
