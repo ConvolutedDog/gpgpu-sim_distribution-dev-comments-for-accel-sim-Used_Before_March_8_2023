@@ -93,6 +93,10 @@ struct bank_t {
   //row precharge ie. deactivate row.
   //RPc（Row Precharge Time，又可以称为：Precharge to Active）：内存行地址控制器预充电时间，
   //一般单位为单位时间周期。
+  //在读取 cell 行（之后也称作单元行）前，需要把每根位线都 precharge（预充电）到电容电压/供电
+  //电压最大值的一半，如果供电电压是 3 V，那么就预充电到 1.5 V。预充电完毕后打开字线，单元行中
+  //每个 cell 电容或是向位线放电，或是由位线充电。放电者位线电压上升一点，充电者位线电压下降一
+  //点。放大器可以捕捉位线上的电压波动，继而在本地还原、暂存对应 cell 电压。
   unsigned int RPc;
   //row cycle time ie. precharge current, then activate different row.
   //RCc（Row Cycle Time）：定义了同一bank两次行激活命令所间隔的最小时间，或者说是一个bank中完
