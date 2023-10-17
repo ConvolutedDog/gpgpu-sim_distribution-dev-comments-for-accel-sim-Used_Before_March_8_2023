@@ -7489,6 +7489,7 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
     case INST_ACC_R:
       m_stats->gpgpu_n_mem_read_inst++;
       break;
+    //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
     case L1_WRBK_ACC:
       m_stats->gpgpu_n_mem_write_global++;
       break;
@@ -7558,12 +7559,14 @@ void simt_core_cluster::icnt_cycle() {
     //    MA_TUP(TEXTURE_ACC_R),       从纹理缓存读
     //    MA_TUP(GLOBAL_ACC_W),        向global memory写
     //    MA_TUP(LOCAL_ACC_W),         向local memory写
+    //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
     //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
     //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
     //    MA_TUP(INST_ACC_R),          从指令缓存读
     //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
     //    MA_TUP(L1_WR_ALLOC_R),       L1缓存write-allocate（cache写不命中，将主存中块调入cache，
     //                                 写入该cache块）
+    //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
     //    MA_TUP(L2_WR_ALLOC_R),       L2缓存write-allocate
     //    MA_TUP(NUM_MEM_ACCESS_TYPE), 存储器访问的类型总数
     if (mf->get_access_type() == INST_ACC_R) {
