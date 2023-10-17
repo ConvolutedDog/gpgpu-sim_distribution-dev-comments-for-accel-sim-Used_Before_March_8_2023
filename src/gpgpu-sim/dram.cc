@@ -332,7 +332,10 @@ void dram_t::cycle() {
         mem_fetch *data = cmd->data;
         data->set_status(IN_PARTITION_MC_RETURNQ,
                          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        //当L1 cache需要逐出
+        //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC不会用到。
+        //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+        //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+        //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
         if (data->get_access_type() != L1_WRBK_ACC &&
             data->get_access_type() != L2_WRBK_ACC) {
           data->set_reply();
@@ -644,7 +647,9 @@ bool dram_t::issue_col_command(int j) {
       WTRc = m_config->tWTR;
       bk[j]->WTPc = m_config->tWTP;
       issued = true;
-
+      //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+      //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+      //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
       if (bk[j]->mrq->data->get_access_type() == L2_WRBK_ACC)
         n_wr_WB++;
       else
