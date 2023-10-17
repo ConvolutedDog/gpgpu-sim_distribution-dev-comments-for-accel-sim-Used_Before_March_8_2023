@@ -891,6 +891,7 @@ const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
 typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
 #define NO_PARTIAL_WRITE (mem_access_byte_mask_t())
 
+//L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
 #define MEM_ACCESS_TYPE_TUP_DEF                                         \
   MA_TUP_BEGIN(mem_access_type)                                         \
   MA_TUP(GLOBAL_ACC_R), MA_TUP(LOCAL_ACC_R), MA_TUP(CONST_ACC_R),       \
@@ -987,6 +988,7 @@ class mem_access_t {
     //    MA_TUP(L1_WRBK_ACC), L1缓存write back
     //    MA_TUP(L2_WRBK_ACC), L2缓存write back
     //    MA_TUP(INST_ACC_R), 从指令缓存（I-Cache）读
+    //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
     //    MA_TUP(L1_WR_ALLOC_R), L1缓存write-allocate（对cache写不命中，将主存中块调入cache，写入
     //                           该cache块）
     //    MA_TUP(L2_WR_ALLOC_R), L2缓存write-allocate
