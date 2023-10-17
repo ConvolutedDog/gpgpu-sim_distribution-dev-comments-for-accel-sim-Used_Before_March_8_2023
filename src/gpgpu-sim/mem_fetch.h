@@ -82,6 +82,9 @@ class mem_fetch {
   //置读响应或者是写确认。
   void set_reply() {
     //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
+    //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+    //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+    //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
     assert(m_access.get_type() != L1_WRBK_ACC &&
            m_access.get_type() != L2_WRBK_ACC);
     //如果内存访问请求的类型是读请求，将其设置为读响应。
@@ -148,6 +151,9 @@ class mem_fetch {
   //    MA_TUP(LOCAL_ACC_W),         向local memory写
   //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到：
   //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
+  //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+  //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+  //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
   //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
   //    MA_TUP(INST_ACC_R),          从指令缓存读
   //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
