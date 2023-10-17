@@ -332,6 +332,7 @@ void dram_t::cycle() {
         mem_fetch *data = cmd->data;
         data->set_status(IN_PARTITION_MC_RETURNQ,
                          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        //当L1 cache需要逐出
         if (data->get_access_type() != L1_WRBK_ACC &&
             data->get_access_type() != L2_WRBK_ACC) {
           data->set_reply();
