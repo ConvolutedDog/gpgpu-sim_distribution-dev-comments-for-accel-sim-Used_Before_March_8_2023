@@ -536,6 +536,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
       //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
       //    MA_TUP(INST_ACC_R),          从指令缓存读
+      //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
       //    MA_TUP(L1_WR_ALLOC_R),       L1缓存write-allocate（cache写不命中，将主存中块调入cache，
       //                                 写入该cache块）
       //    MA_TUP(L2_WR_ALLOC_R),       L2缓存write-allocate（cache写不命中，将主存中块调入cache，
