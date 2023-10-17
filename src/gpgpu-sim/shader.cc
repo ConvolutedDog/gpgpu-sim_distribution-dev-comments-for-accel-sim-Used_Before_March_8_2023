@@ -7495,9 +7495,11 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
     case L2_WRBK_ACC:
       m_stats->gpgpu_n_mem_l2_writeback++;
       break;
+    //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
     case L1_WR_ALLOC_R:
       m_stats->gpgpu_n_mem_l1_write_allocate++;
       break;
+    //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
     case L2_WR_ALLOC_R:
       m_stats->gpgpu_n_mem_l2_write_allocate++;
       break;
@@ -7559,6 +7561,7 @@ void simt_core_cluster::icnt_cycle() {
     //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
     //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
     //    MA_TUP(INST_ACC_R),          从指令缓存读
+    //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
     //    MA_TUP(L1_WR_ALLOC_R),       L1缓存write-allocate（cache写不命中，将主存中块调入cache，
     //                                 写入该cache块）
     //    MA_TUP(L2_WR_ALLOC_R),       L2缓存write-allocate
