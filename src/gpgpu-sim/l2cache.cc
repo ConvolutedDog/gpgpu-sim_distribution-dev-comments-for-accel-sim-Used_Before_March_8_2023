@@ -401,6 +401,9 @@ void memory_partition_unit::set_done(mem_fetch *mf) {
   unsigned global_spid = mf->get_sub_partition_id();
   int spid = global_sub_partition_id_to_local_id(global_spid);
   assert(m_sub_partition[spid]->get_id() == global_spid);
+  //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+  //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+  //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
   if (mf->get_access_type() == L1_WRBK_ACC ||
       mf->get_access_type() == L2_WRBK_ACC) {
     m_arbitration_metadata.return_credit(spid);
@@ -535,6 +538,9 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       //    MA_TUP(LOCAL_ACC_W),         向local memory写
       //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到：
       //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
+      //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+      //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+      //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
       //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
       //    MA_TUP(INST_ACC_R),          从指令缓存读
       //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
@@ -1130,6 +1136,9 @@ mem_fetch *memory_sub_partition::pop() {
   m_request_tracker.erase(mf);
   if (mf && mf->isatomic()) mf->do_atomic();
   //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
+  //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+  //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+  //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {
     delete mf;
@@ -1157,6 +1166,9 @@ L2_icnt_queue->ICNT，因此这里是将内存子分区中的m_L2_icnt_queue队�
 mem_fetch *memory_sub_partition::top() {
   mem_fetch *mf = m_L2_icnt_queue->top();
   //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
+  //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+  //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+  //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {
     m_L2_icnt_queue->pop();
