@@ -356,11 +356,11 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         assert(line->get_status(mask) == INVALID);
       }
     }
-    //如果当前cache block的状态不是RESERVED。
+    //如果当前Cache Line的状态不是RESERVED。
     //到当前阶段，抛开前面能够确定的HIT，HIT_RESERVED，SECTOR_MISS，还剩下MISS/RESERVATION
     //_FAIL/MSHR_HIT三种状态。也就是说，在没有Hit，也没有HIT_RESERVED，也没有SECTOR_MISS的
     //情况下，需要逐出一个块，来给新访问提供RESERVE的空间。
-    //line->is_reserved_line()：只要有一个sector是RESERVED，就认为这个cache block是RESERVED。
+    //line->is_reserved_line()：只要有一个sector是RESERVED，就认为这个Cache Line是RESERVED。
     if (!line->is_reserved_line()) {
       // percentage of dirty lines in the cache
       // number of dirty lines / total lines in the cache
@@ -371,17 +371,17 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       // Then this cacheline is eligible to be considered for replacement candidate
       // i.e. Only evict clean cachelines until total dirty cachelines reach the limit.
       //m_config.m_wr_percent在V100中配置为25%。
-      //line->is_modified_line()：只要有一个sector是MODIFIED，就认为这个cache block是MODIFIED。
+      //line->is_modified_line()：只要有一个sector是MODIFIED，就认为这个cache line是MODIFIED。
       if (!line->is_modified_line() ||
           dirty_line_percentage >= m_config.m_wr_percent) 
       {
-        //一个cache block的状态有：INVALID = 0, RESERVED, VALID, MODIFIED，如果它是VALID，
-        //就在上面的代码命中了
+        //一个cache line的状态有：INVALID = 0, RESERVED, VALID, MODIFIED，如果它是VALID，
+        //就在上面的代码命中了。
         //因为在逐出一个cache块时，优先逐出一个干净的块，即没有sector被RESERVED，也没有sector
-        //被MODIFIED，来逐出；但是如果dirty的cache block的比例超过m_wr_percent（V100中配置为
+        //被MODIFIED，来逐出；但是如果dirty的cache line的比例超过m_wr_percent（V100中配置为
         //25%），也可以不满足MODIFIED的条件。
         
-        //all_reserved被初始化为true，是指所有cache block都没有能够逐出来为新访问提供RESERVE
+        //all_reserved被初始化为true，是指所有cache line都没有能够逐出来为新访问提供RESERVE
         //的空间，这里一旦满足上面两个if条件，说明当前line可以被逐出来提供空间供RESERVE新访问，
         //这里all_reserved置为false。而一旦最终all_reserved仍旧保持true的话，就说明当前line
         //不可被逐出，发生RESERVATION_FAIL。
@@ -392,7 +392,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         } else {
           // valid line : keep track of most appropriate replacement candidate
           if (m_config.m_replacement_policy == LRU) {
-            //valid_timestamp设置为最近最少被使用的cache block的最末次访问时间。
+            //valid_timestamp设置为最近最少被使用的cache line的最末次访问时间。
             if (line->get_last_access_time() < valid_timestamp) {
               valid_timestamp = line->get_last_access_time();
               valid_line = index;
@@ -412,10 +412,10 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   //抛开前面能够确定的HIT，HIT_RESERVED，SECTOR_MISS还能够判断MISS/RESERVATION_FAIL
   //两种状态是否成立。
   //因为在逐出一个cache块时，优先逐出一个干净的块，即没有sector被RESERVED，也没有sector
-  //被MODIFIED，来逐出；但是如果dirty的cache block的比例超过m_wr_percent（V100中配置为
+  //被MODIFIED，来逐出；但是如果dirty的cache line的比例超过m_wr_percent（V100中配置为
   //25%），也可以不满足MODIFIED的条件。
-  //all_reserved被初始化为true，是指所有cache block都没有能够逐出来为新访问提供RESERVE
-  //的空间，这里一旦满足上面两个if条件，说明cache block可以被逐出来提供空间供RESERVE新访
+  //all_reserved被初始化为true，是指所有cache line都没有能够逐出来为新访问提供RESERVE
+  //的空间，这里一旦满足上面两个if条件，说明cache line可以被逐出来提供空间供RESERVE新访
   //问，这里all_reserved置为false。而一旦最终all_reserved仍旧保持true的话，就说明cache
   //line不可被逐出，发生RESERVATION_FAIL。
   if (all_reserved) {
@@ -441,7 +441,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   //  }
   //}
 
-  //如果上面的cache block可以被逐出来reserve新访问，则返回MISS。
+  //如果上面的cache line可以被逐出来reserve新访问，则返回MISS。
   return MISS;
 }
 
@@ -490,19 +490,19 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
     //新访问是HIT_RESERVED的话，不执行动作。
     case HIT_RESERVED:
       m_pending_hit++;
-    //新访问是HIT的话，设置第idx号cache block以及mask对应的sector的最末此访问时间为当前拍。
+    //新访问是HIT的话，设置第idx号cache line以及mask对应的sector的最末此访问时间为当前拍。
     case HIT:
       m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
       break;
-    //新访问是MISS的话，说明已经选定m_lines[idx]作为逐出并reserve新访问的cache block。
+    //新访问是MISS的话，说明已经选定m_lines[idx]作为逐出并reserve新访问的cache line。
     case MISS:
       m_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
       //L1 cache与L2 cache均为allocate on miss。
       if (m_config.m_alloc_policy == ON_MISS) {
         if (m_lines[idx]->is_modified_line()) {
-          //m_lines[idx]作为逐出并reserve新访问的cache block，如果它的某个sector已经被
-          //MODIFIED，则需要执行写回操作，设置写回的标志为wb=true，设置逐出cache block的
+          //m_lines[idx]作为逐出并reserve新访问的cache line，如果它的某个sector已经被
+          //MODIFIED，则需要执行写回操作，设置写回的标志为wb=true，设置逐出cache line的
           //信息。
           wb = true;
           evicted.set_info(m_lines[idx]->m_block_addr,
@@ -534,8 +534,8 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
       }
       break;
     //probe函数中：
-    //all_reserved被初始化为true，是指所有cache block都没有能够逐出来为新访问提供RESERVE
-    //的空间，这里一旦满足函数两个if条件，说明cache block可以被逐出来提供空间供RESERVE新访
+    //all_reserved被初始化为true，是指所有cache line都没有能够逐出来为新访问提供RESERVE
+    //的空间，这里一旦满足函数两个if条件，说明cache line可以被逐出来提供空间供RESERVE新访
     //问，这里all_reserved置为false。而一旦最终all_reserved仍旧保持true的话，就说明cache
     //line不可被逐出，发生RESERVATION_FAIL。因此这里不执行任何操作。
     case RESERVATION_FAIL:
@@ -1483,6 +1483,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
                                        evicted_block_info &evicted,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
+  
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
   bool mshr_hit = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
@@ -1807,8 +1808,8 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
 
   if (mf->get_access_byte_mask().count() == m_config.get_atom_sz()) {
-    // if the request writes to the whole cache block/sector, then, write and set
-    // cache block Modified. and no need to send read request to memory or
+    // if the request writes to the whole cache line/sector, then, write and set
+    // cache line Modified. and no need to send read request to memory or
     // reserve mshr
 
     if (miss_queue_full(0)) {
@@ -1954,7 +1955,7 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   // no read fetch is required, instead each sector has a bit-wise write-mask. When 
   // a write to a single byte is received, it writes the byte to the sector, sets 
   // the corresponding write bit and sets the sector as valid and modified. When a 
-  // modified cache block is evicted, the cache block is written back to the memory 
+  // modified cache line is evicted, the cache line is written back to the memory 
   // along with the write mask. It is important to note that, in a write-validate 
   // policy, it assumes the read and write granularity can be in terms of bytes in 
   // order to exploit the benefits of the write-mask. In fact, based on our micro-
@@ -2027,7 +2028,7 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     // In the write-validate policy, no read fetch is required, instead each sector has 
     // a bit-wise write-mask. When a write to a single byte is received, it writes the 
     // byte to the sector, sets the corresponding write bit and sets the sector as valid 
-    // and modified. When a modified cache block is evicted, the cache block is written 
+    // and modified. When a modified cache line is evicted, the cache line is written 
     // back to the memory along with the write mask.
     //而在FETCH_ON_READ中，需要设置sector的byte mask。这里就是指设置这个byte mask的标志。
     block->set_byte_mask_on_fill(true);
@@ -2154,6 +2155,9 @@ enum cache_request_status data_cache::rd_miss_base(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
   //读miss时，就需要将数据请求发送至下一级存储。
+  //miss_queue_full检查是否一个miss请求能够在当前时钟周期内被处理，m_miss_queue_size在
+  //V100的L1 cache中配置为16，在L2 cache中配置为32，当一个请求的大小大到m_miss_queue放
+  //不下时，它就在当前时钟周期内无法处理，发生RESERVATION_FAIL。
   if (miss_queue_full(1)) {
     // cannot handle request this cycle
     // (might need to generate two requests)
