@@ -447,7 +447,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
 
 
 /*
-更新LRU状态。Least Recently Used。
+更新LRU状态。Least Recently Used。返回是否需要写回wb以及逐出的cache line的信息evicted。
 对一个cache进行数据访问的时候，调用data_cache::access()函数：
 - 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
   为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
@@ -481,10 +481,13 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
                                             unsigned &idx, bool &wb,
                                             evicted_block_info &evicted,
                                             mem_fetch *mf) {
+  //对当前tag_array的访问次数加1。
   m_access++;
+  //标记当前tag_array所属cache是否被使用过。一旦有access()函数被调用，则说明被使用过。
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
-  //由于当前函数没有把之前probe函数的cache访问状态传参进来，这里这个probe单纯的重新获取这个状态。
+  //由于当前函数没有把之前probe函数的cache访问状态传参进来，这里这个probe单纯的重新获取
+  //这个状态。
   enum cache_request_status status = probe(addr, idx, mf, mf->is_write());
   switch (status) {
     //新访问是HIT_RESERVED的话，不执行动作。
@@ -1509,7 +1512,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     if (read_only)
       m_tag_array->access(block_addr, time, cache_index, mf);
     else
-      //更新LRU状态。Least Recently Used。
+      //更新LRU状态。Least Recently Used。返回是否需要写回wb以及逐出的cache line的信息evicted。
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
     //将mshr_addr地址的数据请求mf加入到MSHR中。因为命中MSHR，说明前面已经有对该数据的请求发送到
@@ -1561,7 +1564,12 @@ void baseline_cache::send_read_request(new_addr_type addr,
 }
 
 // Sends write request to lower level memory (write or writeback)
-//将数据写请求一同发送至下一级存储。
+/*
+将数据写请求一同发送至下一级存储。
+这里需要做的是将读请求类型WRITE_REQUEST_SENT或WRITE_BACK_REQUEST_SENT放入events，并将数据
+请求mf放入当前cache的miss_queue中，等待baseline_cache::cycle()将队首的数据请求mf发送给下一
+级存储。
+*/
 void data_cache::send_write_request(mem_fetch *mf, cache_event request,
                                     unsigned time,
                                     std::list<cache_event> &events) {
@@ -1695,7 +1703,9 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   update_m_readable(mf,cache_index);
 
   // generate a write-through
-  //write-through策略将数据写入下一级存储。
+  //write-through策略将数据写入下一级存储。将数据写请求一同发送至下一级存储。这里需要做的是
+  //将读请求类型WRITE_REQUEST_SENT放入events，并将数据请求mf放入当前cache的miss_queue中，
+  //等待baseline_cache::cycle()将队首的数据请求mf发送给下一级存储。
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
 
   return HIT;
@@ -2026,14 +2036,18 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 
   //在V100配置中，L1 cache为'T'-write through，L2 cache为'B'-write back。
   if (m_config.m_write_policy == WRITE_THROUGH) {
-    //如果是write through，则需要将数据一同写回下一层存储。
+    //如果是write through，则需要直接将数据一同写回下一层存储。将数据写请求一同发送至下一级
+    //存储。这里需要做的是将读请求类型WRITE_REQUEST_SENT放入events，并将数据请求mf放入当前
+    //cache的miss_queue中，等待baseline_cache::cycle()将队首的数据请求mf发送给下一级存储。
     send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
   }
 
+  //wb标志是否后面某个被逐出的cache block因为被MODIFIED需要写回到下一级存储。
   bool wb = false;
+  //evicted记录着被逐出的cache block的信息。
   evicted_block_info evicted;
 
-  //更新LRU状态。Least Recently Used。
+  //更新LRU状态。Least Recently Used。返回是否需要写回wb以及逐出的cache line的信息evicted。
   //对一个cache进行数据访问的时候，调用data_cache::access()函数：
   //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
   //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
@@ -2042,8 +2056,8 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   //  - process_tag_probe()函数中，会根据请求的读写状态，probe()函数返回的cache访问状态，
   //    执行m_wr_hit/m_wr_miss/m_rd_hit/m_rd_miss函数，他们会调用m_tag_array->access()
   //    函数来实现LRU状态的更新。
-  //m_lines[idx]作为逐出并reserve新访问的cache block，如果它的某个sector已经被MODIFIED，则
-  //需要执行写回操作，设置写回的标志为wb=true，并设置逐出cache block的信息。
+  //m_lines[idx]作为逐出并reserve新访问的cache block，如果它的某个sector已经被MODIFIED，
+  //则需要执行写回操作，设置写回的标志为wb=true，并设置逐出cache block的信息。
   cache_request_status m_status =
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
@@ -2111,8 +2125,15 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     //被MODIFIED，则需要执行写回操作，设置写回的标志为wb=true。
     //在V100配置中，L1 cache为'T'-write through，L2 cache为'B'-write back。这里L2
     //cache会进下面的if块。
+    //因为上面代码：
+    //    if (m_config.m_write_policy == WRITE_THROUGH) {
+    //      send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+    //    }
+    //已经处理过write-through的情况，这里需要排除。
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
-      //m_wrbk_type：L1 cache为L1_WRBK_ACC，L2 cache为L2_WRBK_ACC。
+      //在V100中，m_wrbk_type：L1 cache为L1_WRBK_ACC，L2 cache为L2_WRBK_ACC。
+      //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，因此不会进入这个if块，实际上
+      //L1_WRBK_ACC也不会用到。
       mem_fetch *wb = m_memfetch_creator->alloc(
           evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
           evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
@@ -2122,6 +2143,9 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
       wb->set_parition(mf->get_tlx_addr().sub_partition);
+      //将数据写请求一同发送至下一级存储。需要做的是将读请求类型WRITE_BACK_REQUEST_SENT放
+      //入events，并将数据请求mf放入当前cache的miss_queue中，等baseline_cache::cycle()
+      //将队首的数据请求mf发送给下一级存储。
       send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
                          time, events);
     }
@@ -2236,7 +2260,9 @@ enum cache_request_status data_cache::rd_miss_base(
     // (already modified lower level)
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
       //发送写请求，将MODIFIED的被逐出的cache block写回到下一级存储。
-      //m_wrbk_type：L1 cache为L1_WRBK_ACC，L2 cache为L2_WRBK_ACC。
+      //在V100中，m_wrbk_type：L1 cache为L1_WRBK_ACC，L2 cache为L2_WRBK_ACC。
+      //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，因此不会进入这个if块，实际上
+      //L1_WRBK_ACC也不会用到。
       mem_fetch *wb = m_memfetch_creator->alloc(
           evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
           evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
@@ -2246,6 +2272,9 @@ enum cache_request_status data_cache::rd_miss_base(
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
       wb->set_parition(mf->get_tlx_addr().sub_partition);
+      //将数据写请求一同发送至下一级存储。需要做的是将读请求类型WRITE_BACK_REQUEST_SENT放
+      //入events，并将数据请求mf放入当前cache的miss_queue中，等baseline_cache::cycle()
+      //将队首的数据请求mf发送给下一级存储。
       send_write_request(wb, WRITE_BACK_REQUEST_SENT, time, events);
     }
     return MISS;
