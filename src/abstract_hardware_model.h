@@ -893,6 +893,9 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
 
 //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
 //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
+//在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+//逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+//因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
 #define MEM_ACCESS_TYPE_TUP_DEF                                         \
   MA_TUP_BEGIN(mem_access_type)                                         \
   MA_TUP(GLOBAL_ACC_R), MA_TUP(LOCAL_ACC_R), MA_TUP(CONST_ACC_R),       \
@@ -988,6 +991,9 @@ class mem_access_t {
     //    MA_TUP(LOCAL_ACC_W), 向local memory写
     //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到：
     //    MA_TUP(L1_WRBK_ACC), L1缓存write back
+    //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+    //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+    //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
     //    MA_TUP(L2_WRBK_ACC), L2缓存write back
     //    MA_TUP(INST_ACC_R), 从指令缓存（I-Cache）读
     //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
