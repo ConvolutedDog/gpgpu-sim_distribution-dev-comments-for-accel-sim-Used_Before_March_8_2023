@@ -1165,7 +1165,7 @@ class tag_array {
                                   mem_access_sector_mask_t mask, bool is_write,
                                   bool probe_mode = false,
                                   mem_fetch *mf = NULL) const;
-  //更新LRU状态。Least Recently Used。
+  //更新LRU状态。Least Recently Used。返回是否需要写回wb以及逐出的cache line的信息evicted。
   //对一个cache进行数据访问的时候，调用data_cache::access()函数：
   //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
   //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
@@ -1176,7 +1176,7 @@ class tag_array {
   //    函数来实现LRU状态的更新。
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, mem_fetch *mf);
-  //更新LRU状态。Least Recently Used。
+  //更新LRU状态。Least Recently Used。返回是否需要写回wb以及逐出的cache line的信息evicted。
   //对一个cache进行数据访问的时候，调用data_cache::access()函数：
   //- 首先cahe会调用m_tag_array->probe()函数，判断对cache的访问（地址为addr，sector mask
   //  为mask）是HIT/HIT_RESERVED/SECTOR_MISS/MISS/RESERVATION_FAIL等状态。
@@ -1234,6 +1234,7 @@ class tag_array {
   //m_lines[index] = &m_lines[set_index * m_config.m_assoc + way_index]
   cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
 
+  //对当前tag_array的访问次数。
   unsigned m_access;
   unsigned m_miss;
   unsigned m_pending_hit;  // number of cache miss that hit a line that is
@@ -1251,6 +1252,7 @@ class tag_array {
   int m_core_id;  // which shader core is using this
   int m_type_id;  // what kind of cache is this (normal, texture, constant)
 
+  //标记当前tag_array所属cache是否被使用过。一旦有access()函数被调用，则说明被使用过。
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
@@ -2008,6 +2010,7 @@ class data_cache : public baseline_cache {
 class l1_cache : public data_cache {
  public:
   //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
+  //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, class gpgpu_sim *gpu)
@@ -2022,6 +2025,7 @@ class l1_cache : public data_cache {
 
  protected:
   //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
+  //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, tag_array *new_tag_array,
