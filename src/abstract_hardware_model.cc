@@ -326,12 +326,14 @@ void warp_inst_t::generate_mem_accesses() {
   //    MA_TUP(TEXTURE_ACC_R), 从纹理缓存读
   //    MA_TUP(GLOBAL_ACC_W), 向global memory写
   //    MA_TUP(LOCAL_ACC_W), 向local memory写
+  //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到：
   //    MA_TUP(L1_WRBK_ACC), L1缓存write back
   //    MA_TUP(L2_WRBK_ACC), L2缓存write back
   //    MA_TUP(INST_ACC_R), 从指令缓存读
   //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
   //    MA_TUP(L1_WR_ALLOC_R), L1缓存write-allocate（对cache写不命中，将主存中块调入cache，写入
   //                           该cache块）
+  //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
   //    MA_TUP(L2_WR_ALLOC_R), L2缓存write-allocate
   mem_access_type access_type;
   //space是存储空间的类型，包括：
@@ -372,12 +374,14 @@ void warp_inst_t::generate_mem_accesses() {
   //    MA_TUP(TEXTURE_ACC_R), 从纹理缓存读
   //    MA_TUP(GLOBAL_ACC_W), 向global memory写
   //    MA_TUP(LOCAL_ACC_W), 向local memory写
+  //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到：
   //    MA_TUP(L1_WRBK_ACC), L1缓存write back
   //    MA_TUP(L2_WRBK_ACC), L2缓存write back
   //    MA_TUP(INST_ACC_R), 从指令缓存读
   //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
   //    MA_TUP(L1_WR_ALLOC_R), L1缓存write-allocate（对cache写不命中，将主存中块调入cache，写入
   //                           该cache块）
+  //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
   //    MA_TUP(L2_WR_ALLOC_R), L2缓存write-allocate
   switch (space.get_type()) {
     case const_space:        //常量缓存
