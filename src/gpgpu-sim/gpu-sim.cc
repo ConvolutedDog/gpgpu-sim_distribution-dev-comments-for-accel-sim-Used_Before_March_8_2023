@@ -2489,6 +2489,7 @@ void gpgpu_sim::cycle() {
       //口就是L2_icnt_queue->ICNT，因此这里是将内存子分区中的m_L2_icnt_queue队列顶部的数据包弹出并
       //返回。这里是对所有内存子分区循环，将所有内存子分区的m_L2_icnt_queue队列顶部的数据包弹出。这里
       //如果数据包的类型是L2_WRBK_ACC或L1_WRBK_ACC，则返回空数据包，反之返回整个数据包。
+      //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
       mem_fetch *mf = m_memory_sub_partition[i]->top();
       if (mf) {
         // The packet size varies depending on the type of request:
