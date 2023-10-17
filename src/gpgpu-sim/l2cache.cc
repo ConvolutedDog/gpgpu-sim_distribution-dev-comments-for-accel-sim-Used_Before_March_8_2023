@@ -533,12 +533,14 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       //    MA_TUP(TEXTURE_ACC_R),       从纹理缓存读
       //    MA_TUP(GLOBAL_ACC_W),        向global memory写
       //    MA_TUP(LOCAL_ACC_W),         向local memory写
+      //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到：
       //    MA_TUP(L1_WRBK_ACC),         L1缓存write back
       //    MA_TUP(L2_WRBK_ACC),         L2缓存write back
       //    MA_TUP(INST_ACC_R),          从指令缓存读
       //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
       //    MA_TUP(L1_WR_ALLOC_R),       L1缓存write-allocate（cache写不命中，将主存中块调入cache，
       //                                 写入该cache块）
+      //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到：
       //    MA_TUP(L2_WR_ALLOC_R),       L2缓存write-allocate（cache写不命中，将主存中块调入cache，
       //                                 写入该cache块）
       //    MA_TUP(NUM_MEM_ACCESS_TYPE), 存储器访问的类型总数
@@ -699,6 +701,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
           //如果访问L2缓存命中。
           if (!write_sent) {
             //如果不是写操作且命中L2 Cache，则需要判断是否是L1_WRBK_ACC。
+            //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
             // L2 cache replies
             assert(!read_sent);
             //!write_sent且!read_sent，发送的是WRITE_BACK_REQUEST_SENT/WRITE_ALLOCATE_SENT。
@@ -707,6 +710,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
               delete mf;
             } else {
               //如果不是L1_WRBK_ACC，则说明是数据读，就需要将reply数据包返回给ICNT。
+              //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
               mf->set_reply();
               mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -727,6 +731,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                m_config->m_L2_config.m_write_alloc_policy ==
                    LAZY_FETCH_ON_READ) &&
               !was_writeallocate_sent(events)) {
+            //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
             if (mf->get_access_type() == L1_WRBK_ACC) {
               m_request_tracker.erase(mf);
               delete mf;
@@ -1124,6 +1129,7 @@ mem_fetch *memory_sub_partition::pop() {
   mem_fetch *mf = m_L2_icnt_queue->pop();
   m_request_tracker.erase(mf);
   if (mf && mf->isatomic()) mf->do_atomic();
+  //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {
     delete mf;
@@ -1150,6 +1156,7 @@ L2_icnt_queue->ICNT，因此这里是将内存子分区中的m_L2_icnt_queue队�
 */
 mem_fetch *memory_sub_partition::top() {
   mem_fetch *mf = m_L2_icnt_queue->top();
+  //在V100中，L1 cache的m_write_policy为WRITE_THROUGH，实际上L1_WRBK_ACC也不会用到。
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {
     m_L2_icnt_queue->pop();
