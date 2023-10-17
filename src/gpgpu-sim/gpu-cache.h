@@ -639,7 +639,7 @@ struct sector_cache_block : public cache_block_t {
   //在当前版本的GPGPU-Sim中，m_ignore_on_fill_status暂时用不到。
   bool m_ignore_on_fill_status[SECTOR_CHUNCK_SIZE];
   //cache block的每个sector都有一个标志位m_set_modified_on_fill[i]，标记着这个cache 
-  //block是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
+  //4个sector是否被修改，在sector_cache_block::fill()函数调用的时候会使用。
   bool m_set_modified_on_fill[SECTOR_CHUNCK_SIZE];
   bool m_set_readable_on_fill[SECTOR_CHUNCK_SIZE];
   bool m_set_byte_mask_on_fill;
@@ -979,9 +979,21 @@ class cache_config {
   }
   //返回cache block的地址，该地址即为地址addr的tag位+set index位。即除offset位以外的所
   //有位。
+  //|-------|-------------|--------------|
+  //   tag     set_index   offset in-line  
+  //m_line_sz = SECTOR_SIZE * SECTOR_CHUNCK_SIZE = 32 bytes/sector * 4 sectors = 128 bytes。
   new_addr_type block_addr(new_addr_type addr) const {
     return addr & ~(new_addr_type)(m_line_sz - 1);
   }
+  //返回mshr的地址，该地址即为地址addr的tag位+set index位+sector offset位。即除single sector 
+  //byte offset位以外的所有位。
+  //                   sector off    off in-sector
+  //                   |-------------|-----------|
+  //                    \                       /
+  //                     \                     /
+  //|-------|-------------|-------------------|
+  //   tag     set_index     offset in-line
+  //m_atom_sz = SECTOR_SIZE = 32 bytes/sector。
   new_addr_type mshr_addr(new_addr_type addr) const {
     return addr & ~(new_addr_type)(m_atom_sz - 1);
   }
@@ -1995,6 +2007,7 @@ class data_cache : public baseline_cache {
 //                          cache的sector被逐出时才将数据写回DRAM。
 class l1_cache : public data_cache {
  public:
+  //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, class gpgpu_sim *gpu)
@@ -2008,6 +2021,7 @@ class l1_cache : public data_cache {
                                            std::list<cache_event> &events);
 
  protected:
+  //L1_WR_ALLOC_R/L2_WR_ALLOC_R在V100配置中暂时用不到。
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, tag_array *new_tag_array,
