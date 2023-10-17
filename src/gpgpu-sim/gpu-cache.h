@@ -2051,6 +2051,9 @@ class l2_cache : public data_cache {
   l2_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, class gpgpu_sim *gpu)
+      //在V100中，当L2 cache写不命中时，采取lazy_fetch_on_read策略，当找到一个cache block
+      //逐出时，如果这个cache block是被MODIFIED，则需要将这个cache block写回到下一级存储，
+      //因此会产生L2_WRBK_ACC访问，这个访问就是为了写回被逐出的MODIFIED cache block。
       : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
                    L2_WR_ALLOC_R, L2_WRBK_ACC, gpu) {}
 
