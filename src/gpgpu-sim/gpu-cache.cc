@@ -592,6 +592,7 @@ void tag_array::fill(new_addr_type addr, unsigned time,
 }
 
 void tag_array::fill(unsigned index, unsigned time, mem_fetch *mf) {
+  //L1 cache与L2 cache均为allocate on miss。
   assert(m_config.m_alloc_policy == ON_MISS);
   bool before = m_lines[index]->is_modified_line();
   m_lines[index]->fill(time, mf->get_access_sector_mask(), mf->get_access_byte_mask());
@@ -1390,19 +1391,35 @@ void baseline_cache::cycle(unsigned long long cycle) {
 
 // Interface for response from lower memory level (model bandwidth restictions
 // in caller)
+/*
+返回的数据通过baseline_cache::fill填充进cache的tag_array中。
+*/
 void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   if (m_config.m_mshr_type == SECTOR_ASSOC) {
     assert(mf->get_original_mf());
+    //extra_mf_fields_lookup的定义：
+    //  typedef std::map<mem_fetch *, extra_mf_fields> extra_mf_fields_lookup;
+    //以L2 cache为例：
+    //向cache发出数据请求mf时，如果未命中，且在MSHR中也未命中（没有mf条目），则将其加入到MSHR中，
+    //同时，设置m_extra_mf_fields[mf]，意味着如果mf在m_extra_mf_fields中存在，即mf等待着DRAM
+    //的数据回到L2缓存填充：
+    //m_extra_mf_fields[mf] = extra_mf_fields(
+    //      mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
+    //L1 Data cache中是等待SM内的m_response_fifo中的数据填充。
     extra_mf_fields_lookup::iterator e =
         m_extra_mf_fields.find(mf->get_original_mf());
     assert(e != m_extra_mf_fields.end());
+    //能找到的话，设置m_extra_mf_fields[mf].pending_read减一。
     e->second.pending_read--;
 
+    //如果m_extra_mf_fields[mf].pending_read大于0，说明还在等待其他与mf相同请求的数据，直接返回。
     if (e->second.pending_read > 0) {
       // wait for the other requests to come back
       delete mf;
       return;
     } else {
+      //如果m_extra_mf_fields[mf].pending_read等于0，说明没有在等待其他与mf相同请求的数据，可以
+      //填充到cache中。
       mem_fetch *temp = mf;
       mf = mf->get_original_mf();
       delete temp;
@@ -1414,6 +1431,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   assert(e->second.m_valid);
   mf->set_data_size(e->second.m_data_size);
   mf->set_addr(e->second.m_addr);
+  //L1 cache与L2 cache均为allocate on miss。
   if (m_config.m_alloc_policy == ON_MISS)
     m_tag_array->fill(e->second.m_cache_index, time, mf);
   else if (m_config.m_alloc_policy == ON_FILL) {
@@ -2244,6 +2262,8 @@ enum cache_request_status data_cache::rd_miss_base(
   new_addr_type block_addr = m_config.block_addr(addr);
   //代表要将某个cache block逐出并接收mf从下一级存储返回的数据。
   bool do_miss = false;
+  //wb代表是否需要写回（当一个被逐出的cache block被MODIFIED时，需要写回到下一级存储），
+  //evicted代表被逐出的cache line的信息。
   bool wb = false;
   evicted_block_info evicted;
   //READ MISS处理函数，检查MSHR是否命中或者MSHR是否可用，依此判断是否需要向下一级存储发
@@ -2258,6 +2278,9 @@ enum cache_request_status data_cache::rd_miss_base(
   if (do_miss) {
     // If evicted block is modified and not a write-through
     // (already modified lower level)
+    //这里如果cache的写策略为写直达，就不需要在读miss时将被逐出的MODIFIED cache block写
+    //回到下一级存储，因为这个cache block在被MODIFIED的时候已经被write-through到下一级
+    //存储了。
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
       //发送写请求，将MODIFIED的被逐出的cache block写回到下一级存储。
       //在V100中，m_wrbk_type：L1 cache为L1_WRBK_ACC，L2 cache为L2_WRBK_ACC。
@@ -2284,6 +2307,9 @@ enum cache_request_status data_cache::rd_miss_base(
 
 // Access cache for read_only_cache: returns RESERVATION_FAIL if
 // request could not be accepted (for any reason)
+/*
+read_only_cache访问，包括L1I，L1C。
+*/
 enum cache_request_status read_only_cache::access(
     new_addr_type addr, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events) {
@@ -2296,19 +2322,27 @@ enum cache_request_status read_only_cache::access(
   //|-------|-------------|--------------|
   //   tag     set_index   offset in-line  
   new_addr_type block_addr = m_config.block_addr(addr);
+  //cache_index会返回依据tag位选中的cache block的索引。
   unsigned cache_index = (unsigned)-1;
+  //判断对cache的访问（地址为addr，sector mask为mask）是HIT/HIT_RESERVED/SECTOR_MISS/
+  //MISS/RESERVATION_FAIL等状态。
   enum cache_request_status status =
       m_tag_array->probe(block_addr, cache_index, mf, mf->is_write());
   enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
+    //仅更新LRU状态。
     cache_status = m_tag_array->access(block_addr, time, cache_index,
                                        mf);  // update LRU state
   } else if (status != RESERVATION_FAIL) {
+    //HIT_RESERVED/SECTOR_MISS/MISS状态。
     if (!miss_queue_full(0)) {
       bool do_miss = false;
+      //READ MISS处理函数，检查MSHR是否命中或者MSHR是否可用，依此判断是否需要向下一级存储发
+      //送读请求。
       send_read_request(addr, block_addr, cache_index, mf, time, do_miss,
                         events, true, false);
+      //代表要将某个cache block逐出并接收mf从下一级存储返回的数据。
       if (do_miss)
         cache_status = MISS;
       else
@@ -2448,6 +2482,10 @@ enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
 // The l2 cache access function calls the base data_cache access
 // implementation.  When the L2 needs to diverge from L1, L2 specific
 // changes should be made here.
+/*
+l2 缓存访问函数调用基本data_cache访问实现。 当L2需要与L1有不一致的功能时，应在此处进行L2
+的特定更改。
+*/
 enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) {
