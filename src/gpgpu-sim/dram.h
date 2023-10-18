@@ -75,7 +75,9 @@ class dram_req_t {
 };
 
 struct bankgrp_t {
+  //column to column delay between accesses to different bank groups.
   unsigned int CCDLc;
+  //read to precharge delay between accesses to different bank groups.
   unsigned int RTPLc;
 };
 
@@ -110,6 +112,7 @@ struct bank_t {
 
   unsigned char rw;     // is the bank reading or writing?
   unsigned char state;  // is the bank active or idle?
+  //
   unsigned int curr_row;
   //对当前bank的读请求。
   dram_req_t *mrq;
@@ -136,6 +139,7 @@ class memory_config;
 /*
 dram_t是隶属于单个memory_partition_unit的DRAM模型，每个memory_partition_unit有一个
 dram_t模型。
+参考: https://zhuanlan.zhihu.com/p/561501585
 */
 class dram_t {
  public:
@@ -181,6 +185,9 @@ class dram_t {
   unsigned get_bankgrp_number(unsigned i);
 
   void scheduler_fifo();
+  //FR-FCFS调度器进行调度。主要工作是，将memory request queue中的请求加入到调度器中，
+  //然后从调度器中取出一个请求，并依据请求是读数据还是写数据，分别将其加入到它对应Bank
+  //的读取队列或写入队列中。
   void scheduler_frfcfs();
 
   bool issue_col_command(int j);
