@@ -178,6 +178,14 @@ GPGPU-Sim dependencies:
 - zlib
 - CUDA Toolkit
 
+`makedepend` installation on CentOS:
+```shell
+wget http://xorg.freedesktop.org/archive/individual/util/makedepend-1.0.5.tar.bz2
+tar -jxvf makedepend-1.0.5.tar.bz2
+cd makedepend-1.0.5
+make && make install
+```
+
 GPGPU-Sim documentation dependencies:
 - doxygen
 - graphviz
