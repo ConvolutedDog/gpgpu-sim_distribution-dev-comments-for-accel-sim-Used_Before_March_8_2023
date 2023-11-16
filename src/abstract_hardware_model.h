@@ -1188,7 +1188,7 @@ class inst_t {
   }
   bool valid() const { return m_decoded; }
   virtual void print_insn(FILE *fp) const {
-    fprintf(fp, " [inst @ pc=0x%04x] ", pc);
+    fprintf(fp, " [inst @ pc=0x%04llx] ", pc);
   }
   //指令的操作码是 LOAD 或 TENSOR_CORE_LOAD 则为load指令。
   bool is_load() const {
@@ -1317,6 +1317,13 @@ class warp_inst_t : public inst_t {
     m_empty = true;
     //m_config是GPU Shader Core的配置。
     m_config = NULL;
+
+    // Ni: 
+    m_is_ldgsts = false;
+    m_is_ldgdepbar = false;
+    m_is_depbar = false;
+
+    m_depbar_group_no = 0;
   }
   //构造函数。
   warp_inst_t(const core_config *config) {
@@ -1345,6 +1352,13 @@ class warp_inst_t : public inst_t {
     m_is_cdp = 0;
     //指示GPU是否应该执行原子操作。它用于确保多个线程可以访问和修改共享数据，而不会导致竞争条件或数据损坏。
     should_do_atomic = true;
+
+    // Ni: 
+    m_is_ldgsts = false;
+    m_is_ldgdepbar = false;
+    m_is_depbar = false;
+
+    m_depbar_group_no = 0;
   }
   //析构函数。
   virtual ~warp_inst_t() {}
@@ -1434,7 +1448,7 @@ class warp_inst_t : public inst_t {
 
   // accessors
   virtual void print_insn(FILE *fp) const {
-    fprintf(fp, " [inst @ pc=0x%04x] ", pc);
+    fprintf(fp, " [inst @ pc=0x%04llx] ", pc);
     for (int i = (int)m_config->warp_size - 1; i >= 0; i--)
       fprintf(fp, "%c", ((m_warp_active_mask[i]) ? '1' : '0'));
   }
@@ -1547,6 +1561,12 @@ class warp_inst_t : public inst_t {
   // Jin: cdp support
  public:
   int m_is_cdp;
+  // Ni: add boolean to indicate whether the instruction is ldgsts
+  bool m_is_ldgsts;
+  bool m_is_ldgdepbar;
+  bool m_is_depbar;
+
+  unsigned int m_depbar_group_no;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
@@ -1707,7 +1727,7 @@ class register_set {
     assert(has_ready());
     warp_inst_t **ready;
     ready = NULL;
-    unsigned reg_id;
+    unsigned reg_id = 0;
     for (unsigned i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
         if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
