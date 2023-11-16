@@ -115,7 +115,7 @@ __host__ __device__ __forceinline__ cudaError_t Debug(
         #endif
     #else
         // XXX shameless hack for clang around variadic printf...
-        //     Compilies w/o supplying -std=c++0x but shows warning,
+        //     Compilies w/o supplying -std=c++11 but shows warning,
         //     so we sielence them :)
         #pragma clang diagnostic ignored "-Wc++11-extensions"
         #pragma clang diagnostic ignored "-Wunnamed-type-template-args"
