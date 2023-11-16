@@ -2206,6 +2206,7 @@ void scheduler_unit::cycle() {
               else if (pI->op >= SPEC_UNIT_START_ID)                                                   // yangjianchao16 add
               {
                 unsigned spec_id = pI->op - SPEC_UNIT_START_ID;
+                // printf("%d, %d, %d, %d\n", pI->op, SPEC_UNIT_START_ID, spec_id, m_shader->m_config->m_specialized_unit.size());
                 assert(spec_id < m_shader->m_config->m_specialized_unit.size());
                 register_set *spec_reg_set = m_spec_cores_out[spec_id];
                 bool spec_pipe_avail =
