@@ -654,6 +654,7 @@ struct sector_cache_block : public cache_block_t {
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
       if (sector_mask.to_ulong() & (1 << i)) return i;
     }
+    return SECTOR_CHUNCK_SIZE; //error
   }
 };
 
@@ -895,8 +896,15 @@ class cache_config {
           "cannot work properly with ON_FILL policy. Cache must be ON_MISS. ");
     }
     if (m_cache_type == SECTOR) {
-      assert(m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
-             m_line_sz % SECTOR_SIZE == 0);
+      bool cond = 
+            m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
+            m_line_sz % SECTOR_SIZE == 0;
+      if(!cond){
+          std::cerr<<"error: For sector cache, the simulator uses hard-coded "
+             "SECTOR_SIZE and SECTOR_CHUNCK_SIZE. The line size "
+             "must be product of both values.\n";
+          assert(0);
+      }
     }
 
     // default: port to data array width and granularity = line size

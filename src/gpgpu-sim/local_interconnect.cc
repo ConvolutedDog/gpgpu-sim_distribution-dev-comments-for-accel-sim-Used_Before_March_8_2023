@@ -205,8 +205,8 @@ void xbar_router::RR_Advance() {
       }
     }
   }
-
-  next_node_id = (++next_node_id % total_nodes);
+  next_node_id = next_node_id + 1 ;
+  next_node_id = (next_node_id % total_nodes);
 
   conflicts += conflict_sub;
   if (active) {
@@ -216,8 +216,8 @@ void xbar_router::RR_Advance() {
   }
 
   if (verbose) {
-    printf("%d : cycle %d : conflicts = %d\n", m_id, cycles, conflict_sub);
-    printf("%d : cycle %d : passing reqs = %d\n", m_id, cycles, reqs);
+    printf("%d : cycle %llu : conflicts = %d\n", m_id, cycles, conflict_sub);
+    printf("%d : cycle %llu : passing reqs = %d\n", m_id, cycles, reqs);
   }
 
   // collect some stats about buffer util
@@ -293,7 +293,7 @@ void xbar_router::iSLIP_Advance() {
             out_buffers[_packet.output_deviceID].push(_packet);
             in_buffers[node_id].pop();
             if (verbose)
-              printf("%d : cycle %d : send req from %d to %d\n", m_id, cycles,
+              printf("%d : cycle %llu : send req from %d to %d\n", m_id, cycles,
                      node_id, i - _n_shader);
             if (grant_cycles_count == 1)
               next_node[i] = (++node_id % total_nodes);
@@ -304,7 +304,7 @@ void xbar_router::iSLIP_Advance() {
                   Packet _packet2 = in_buffers[node_id2].front();
 
                   if (_packet2.output_deviceID == i)
-                    printf("%d : cycle %d : cannot send req from %d to %d\n",
+                    printf("%d : cycle %llu : cannot send req from %d to %d\n",
                            m_id, cycles, node_id2, i - _n_shader);
                 }
               }
@@ -329,7 +329,7 @@ void xbar_router::iSLIP_Advance() {
   }
 
   if (verbose)
-    printf("%d : cycle %d : grant_cycles = %d\n", m_id, cycles, grant_cycles);
+    printf("%d : cycle %llu : grant_cycles = %d\n", m_id, cycles, grant_cycles);
 
   //在V100配置中，grant_cycles_count始终等于1。
   if (active && grant_cycles_count == 1)
@@ -338,8 +338,8 @@ void xbar_router::iSLIP_Advance() {
     grant_cycles_count--;
 
   if (verbose) {
-    printf("%d : cycle %d : conflicts = %d\n", m_id, cycles, conflict_sub);
-    printf("%d : cycle %d : passing reqs = %d\n", m_id, cycles, reqs);
+    printf("%d : cycle %llu : conflicts = %d\n", m_id, cycles, conflict_sub);
+    printf("%d : cycle %llu : passing reqs = %d\n", m_id, cycles, reqs);
   }
 
   // collect some stats about buffer util
