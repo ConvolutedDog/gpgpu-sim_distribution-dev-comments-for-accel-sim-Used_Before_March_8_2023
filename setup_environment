@@ -57,7 +57,7 @@ fi
 if [ $CUDA_VERSION_NUMBER -ge 6000 ]; then
 	export PTX_SIM_USE_PTX_FILE=1.ptx
 	export PTX_SIM_KERNELFILE=_1.ptx
-	export CUOBJDUMP_SIM_FILE=
+	export CUOBJDUMP_SIM_FILE=jj
 fi
 
 
