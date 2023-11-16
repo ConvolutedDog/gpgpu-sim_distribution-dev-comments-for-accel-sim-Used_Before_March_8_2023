@@ -234,6 +234,8 @@ void stream_operation::print(FILE *fp) const {
     case stream_no_op:
       fprintf(fp, "no-op");
       break;
+    default:
+      break;
   }
 }
 
